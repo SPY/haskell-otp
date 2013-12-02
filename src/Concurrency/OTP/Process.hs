@@ -19,23 +19,24 @@ import Control.Concurrent (
     myThreadId,
     killThread
   )
-import Control.Concurrent.Chan (
-    Chan,
-    newChan,
-    readChan,
-    writeChan
+import Control.Monad.STM (atomically)
+import Control.Concurrent.STM.TQueue (
+    TQueue,
+    newTQueue,
+    readTQueue,
+    writeTQueue
   )
-import Control.Concurrent.MVar (
-    MVar,
-    newMVar,
-    readMVar,
-    putMVar
+import Control.Concurrent.STM.TVar (
+    TVar,
+    newTVar,
+    readTVar,
+    writeTVar
   )
 import Control.Monad (when)
 import Control.Monad.Reader (ReaderT(..), ask, liftIO)
 import Control.Exception.Base (SomeException(..))
 
-type Queue a = MVar (Maybe (Chan a))
+type Queue a = TVar (Maybe (TQueue a))
 data Pid a = Pid {
     pUniq :: Unique,
     pQueue :: Queue a,
@@ -49,7 +50,7 @@ type Process a = ReaderT (Pid a) IO
 
 spawn :: Process a () -> IO (Pid a)
 spawn body = do
-  queue <- newChan >>= newMVar . Just
+  queue <- atomically $ newTQueue >>= newTVar . Just
   u <- newUnique
   tid <- flip forkFinally (processFinalizer queue) $ do
     tid <- myThreadId
@@ -57,13 +58,14 @@ spawn body = do
   return $ Pid u queue tid
 
 processFinalizer :: Queue a -> Either SomeException () -> IO ()
-processFinalizer queue = const $ putMVar queue Nothing
+processFinalizer queue =
+  const $ atomically $ writeTVar queue Nothing
 
 sendIO :: Pid a -> a -> IO ()
-sendIO (Pid { pQueue = cell }) msg = do
-  queue <- readMVar cell
+sendIO (Pid { pQueue = cell }) msg = atomically $ do
+  queue <- readTVar cell
   when (isJust queue) $
-    writeChan (fromJust queue) msg
+    writeTQueue (fromJust queue) msg
 
 send :: Pid a -> a -> Process a ()
 send pid msg = liftIO $ sendIO pid msg
@@ -71,9 +73,9 @@ send pid msg = liftIO $ sendIO pid msg
 receive :: Process a a
 receive = do
   Pid { pQueue = cell } <- ask
-  liftIO $ do
-    Just queue <- readMVar cell -- always Just here
-    readChan queue
+  liftIO $ atomically $ do
+    Just queue <- readTVar cell -- always Just here
+    readTQueue queue
 
 self :: Process a (Pid a)
 self = ask
@@ -88,4 +90,4 @@ terminate (Pid { pTID = tid }) = killThread tid
 
 isAlive :: Pid a -> IO Bool
 isAlive Pid { pQueue = q } =
-  readMVar q >>= return . isJust
+  atomically $ readTVar q >>= return . isJust

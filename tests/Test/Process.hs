@@ -18,9 +18,17 @@ import Concurrency.OTP.Process
 ms = threadDelay . (1000*)
 
 test_spawnNewProcessAndWait = do
+  resp <- newEmptyMVar
+  pid <- spawn $ liftIO $ putMVar resp ()
+  isEmptyMVar resp >>= assertBool
+  wait pid
+  isEmptyMVar resp >>= assertBool . not
+
+test_isAlive = do
   pid <- spawn $ liftIO $ ms 100
   isAlive pid >>= assertBool
   wait pid
+  isAlive pid >>= assertBool . not
 
 data Message = Message Unique 
   deriving (Eq)

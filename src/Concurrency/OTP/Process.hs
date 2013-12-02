@@ -1,7 +1,7 @@
 module Concurrency.OTP.Process (
   Pid,
   spawn,
-  link,
+  linkIO,
   send,
   sendIO,
   receive,
@@ -112,8 +112,8 @@ isAlive Pid { pQueue = q } =
   atomically $ readTVar q >>= return . isJust
 
 
-link :: Pid a -> IO () -> IO ()
-link Pid { pLinked = cell } handler = do
+linkIO :: Pid a -> IO () -> IO ()
+linkIO Pid { pLinked = cell } handler = do
   added <- atomically $ do
     content <- readTVar cell
     case content of
@@ -127,5 +127,5 @@ link Pid { pLinked = cell } handler = do
 wait :: Pid a -> IO ()
 wait pid = do
  done <- newEmptyMVar
- link pid $ putMVar done ()
+ linkIO pid $ putMVar done ()
  takeMVar done

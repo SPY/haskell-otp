@@ -3,11 +3,16 @@ module Concurrency.OTP.Process (
   spawn,
   send,
   receive,
-  self
+  self,
+  exit
 ) where
 
 import Data.Maybe (isJust, fromJust)
-import Control.Concurrent (forkFinally)
+import Control.Concurrent (
+    forkFinally,
+    myThreadId,
+    killThread
+  )
 import Control.Concurrent.Chan (
     Chan,
     newChan,
@@ -20,7 +25,6 @@ import Control.Concurrent.MVar (
     readMVar,
     putMVar
   )
-import Control.Applicative ((<$>))
 import Control.Monad (when)
 import Control.Monad.Reader (ReaderT(..), ask, liftIO)
 
@@ -37,15 +41,20 @@ spawn body = do
   return pid
 
 send :: Pid a -> a -> Process a ()
-send (Pid cell) msg = do
-  queue <- liftIO $ readMVar cell
+send (Pid cell) msg = liftIO $ do
+  queue <- readMVar cell
   when (isJust queue) $ do
-    liftIO $ writeChan (fromJust queue) msg
+    writeChan (fromJust queue) msg
 
 receive :: Pid a -> Process a a
-receive (Pid cell) = do
-  Just queue <- liftIO $ readMVar cell -- always just if we here
-  liftIO $ readChan queue
+receive (Pid cell) = liftIO $ do
+  Just queue <- readMVar cell -- always just if we here
+  readChan queue
 
 self :: Process a (Pid a)
 self = ask
+
+exit :: Process a ()
+exit = liftIO $ do
+  tId <- myThreadId
+  killThread tId

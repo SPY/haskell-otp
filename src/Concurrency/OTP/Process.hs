@@ -2,6 +2,7 @@ module Concurrency.OTP.Process (
   Pid,
   spawn,
   send,
+  sendIO,
   receive,
   self,
   exit,
@@ -52,11 +53,14 @@ spawn body = do
 processFinalizer :: Queue a -> Either SomeException () -> IO ()
 processFinalizer queue = const $ putMVar queue Nothing
 
-send :: Pid a -> a -> Process a ()
-send (Pid { pQueue = cell }) msg = liftIO $ do
+sendIO :: Pid a -> a -> IO ()
+sendIO (Pid { pQueue = cell }) msg = do
   queue <- readMVar cell
   when (isJust queue) $
     writeChan (fromJust queue) msg
+
+send :: Pid a -> a -> Process a ()
+send pid msg = liftIO $ sendIO pid msg
 
 receive :: Process a a
 receive = do

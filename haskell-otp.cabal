@@ -19,7 +19,6 @@ library
   exposed-modules:     Concurrency.OTP.Process
   -- other-modules:       
   build-depends:       base >= 4.6,
-                       transformers >= 0.3,
                        mtl >= 2.1
   hs-source-dirs:      src
   ghc-options:         -Wall -fno-warn-unused-do-bind

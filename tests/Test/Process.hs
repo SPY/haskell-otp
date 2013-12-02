@@ -6,15 +6,20 @@ import Test.Framework
 import Data.Unique
 import Control.Applicative ((<$>))
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.MVar (
+    newEmptyMVar,
+    takeMVar,
+    putMVar,
+    isEmptyMVar
+  )
 
 import Concurrency.OTP.Process
 
 ms = threadDelay . (1000*)
 
 test_spawnNewProcessAndWait = do
-  pid <- spawn $ liftIO $ do
-    putStrLn "I'm alive"
-    assertBool True
+  pid <- spawn $ liftIO $ ms 100
+  isAlive pid >>= assertBool
   wait pid
 
 data Message = Message Unique 
@@ -27,36 +32,32 @@ newMessage = Message <$> newUnique
 
 test_sendMessage = do
   msg <- newMessage
-  putStrLn $ "Send: " ++ show msg
-  pid <- spawn $ do
-    msg' <- receive
-    liftIO $ putStrLn $ "Received: " ++ show msg'
+  resp <- newEmptyMVar
+  pid <- spawn $
+    receive >>= liftIO . putMVar resp
   sendIO pid msg
-  wait pid
+  takeMVar resp >>= assertEqual msg
 
 test_send2Messages = do
   msg <- newMessage
-  putStrLn $ "Send: " ++ show msg
+  resp <- newEmptyMVar
   pid <- spawn $ do
-    msg' <- receive
-    liftIO $ putStrLn $ "First received: " ++ show msg'
-    msg'' <- receive
-    liftIO $ putStrLn $ "Second received: " ++ show msg''
+    receive >>= liftIO . putMVar resp
+    receive >>= liftIO . putMVar resp
   sendIO pid msg
+  takeMVar resp >>= assertEqual msg
   sendIO pid msg
-  wait pid
+  takeMVar resp >>= assertEqual msg
 
 test_terminate = do
   msg <- newMessage
-  putStrLn $ "Send: " ++ show msg
+  resp <- newEmptyMVar
   pid <- spawn $ do
-    msg' <- receive
-    liftIO $ putStrLn $ "First received: " ++ show msg'
-    msg'' <- receive
-    liftIO $ putStrLn $ "Second received: " ++ show msg'
+    receive >>= liftIO . putMVar resp
+    receive >>= liftIO . putMVar resp
   sendIO pid msg
-  ms 100
-  putStrLn $ "Terminate " ++ show pid
+  takeMVar resp >>= assertEqual msg
   terminate pid
-  sendIO pid msg
   wait pid
+  sendIO pid msg
+  isEmptyMVar resp >>= assertBool

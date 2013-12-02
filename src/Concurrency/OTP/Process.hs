@@ -44,12 +44,18 @@ import Control.Monad.Reader (ReaderT(..), ask, liftIO)
 import Control.Exception.Base (SomeException(..))
 
 type Queue a = TVar (Maybe (TQueue a))
+
 data Pid a = Pid {
     pUniq :: Unique,
     pQueue :: Queue a,
     pTID :: ThreadId,
     pLinked :: TVar (Maybe [IO ()])
   }
+
+data Reason = Normal
+            | Terminate
+            | Error String
+  deriving (Show, Eq)
 
 instance Eq (Pid a) where
   Pid { pUniq = u1 } == Pid { pUniq = u2 } = u1 == u2
@@ -110,7 +116,6 @@ terminate Pid { pTID = tid } = killThread tid
 isAlive :: Pid a -> IO Bool
 isAlive Pid { pQueue = q } =
   atomically $ readTVar q >>= return . isJust
-
 
 linkIO :: Pid a -> IO () -> IO ()
 linkIO Pid { pLinked = cell } handler = do

@@ -6,6 +6,7 @@ module Concurrency.OTP.Process (
   self,
   exit,
   terminate,
+  isAlive,
   liftIO
 ) where
 
@@ -54,7 +55,7 @@ processFinalizer queue = const $ putMVar queue Nothing
 send :: Pid a -> a -> Process a ()
 send (Pid { pQueue = cell }) msg = liftIO $ do
   queue <- readMVar cell
-  when (isJust queue) $ do
+  when (isJust queue) $
     writeChan (fromJust queue) msg
 
 receive :: Process a a
@@ -74,3 +75,7 @@ exit = liftIO $ do
 
 terminate :: Pid a -> IO ()
 terminate (Pid { pTID = tid }) = killThread tid
+
+isAlive :: Pid a -> IO Bool
+isAlive Pid { pQueue = q } =
+  readMVar q >>= return . isJust

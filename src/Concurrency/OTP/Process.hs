@@ -57,10 +57,12 @@ send (Pid { pQueue = cell }) msg = liftIO $ do
   when (isJust queue) $ do
     writeChan (fromJust queue) msg
 
-receive :: Pid a -> Process a a
-receive (Pid { pQueue = cell }) = liftIO $ do
-  Just queue <- readMVar cell -- always just if we here
-  readChan queue
+receive :: Process a a
+receive = do
+  Pid { pQueue = cell } <- ask
+  liftIO $ do
+    Just queue <- readMVar cell -- always Just here
+    readChan queue
 
 self :: Process a (Pid a)
 self = ask

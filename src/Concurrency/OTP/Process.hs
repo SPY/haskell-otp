@@ -1,6 +1,7 @@
 module Concurrency.OTP.Process (
   Pid,
   spawn,
+  link,
   send,
   sendIO,
   receive,
@@ -8,16 +9,22 @@ module Concurrency.OTP.Process (
   exit,
   terminate,
   isAlive,
+  wait,
   liftIO
 ) where
 
 import Data.Maybe (isJust, fromJust)
-import Data.Unique (Unique, newUnique)
+import Data.Unique (Unique, newUnique, hashUnique)
 import Control.Concurrent (
     ThreadId,
     forkFinally,
     myThreadId,
     killThread
+  )
+import Control.Concurrent.MVar (
+    newEmptyMVar,
+    takeMVar,
+    putMVar
   )
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TQueue (
@@ -40,11 +47,15 @@ type Queue a = TVar (Maybe (TQueue a))
 data Pid a = Pid {
     pUniq :: Unique,
     pQueue :: Queue a,
-    pTID :: ThreadId
+    pTID :: ThreadId,
+    pLinked :: TVar (Maybe [IO ()])
   }
 
 instance Eq (Pid a) where
   Pid { pUniq = u1 } == Pid { pUniq = u2 } = u1 == u2
+
+instance Show (Pid a) where
+  show Pid { pUniq = u } = "Pid<" ++ show (hashUnique u) ++ ">"
 
 type Process a = ReaderT (Pid a) IO
 
@@ -52,17 +63,25 @@ spawn :: Process a () -> IO (Pid a)
 spawn body = do
   queue <- atomically $ newTQueue >>= newTVar . Just
   u <- newUnique
-  tid <- flip forkFinally (processFinalizer queue) $ do
+  linked <- atomically $ newTVar $ Just []
+  tid <- flip forkFinally (processFinalizer queue linked) $ do
     tid <- myThreadId
-    runReaderT body (Pid u queue tid)
-  return $ Pid u queue tid
+    runReaderT body (Pid u queue tid linked)
+  return $ Pid u queue tid linked
 
-processFinalizer :: Queue a -> Either SomeException () -> IO ()
-processFinalizer queue =
-  const $ atomically $ writeTVar queue Nothing
-
+processFinalizer :: Queue a
+                 -> TVar (Maybe [IO ()])
+                 -> Either SomeException () -> IO ()
+processFinalizer queue linked = const $ do
+  handlers <- atomically $ do
+    writeTVar queue Nothing
+    Just hs <- readTVar linked
+    writeTVar linked Nothing
+    return hs
+  sequence_ handlers
+    
 sendIO :: Pid a -> a -> IO ()
-sendIO (Pid { pQueue = cell }) msg = atomically $ do
+sendIO Pid { pQueue = cell } msg = atomically $ do
   queue <- readTVar cell
   when (isJust queue) $
     writeTQueue (fromJust queue) msg
@@ -86,8 +105,27 @@ exit = liftIO $ do
   killThread tId
 
 terminate :: Pid a -> IO ()
-terminate (Pid { pTID = tid }) = killThread tid
+terminate Pid { pTID = tid } = killThread tid
 
 isAlive :: Pid a -> IO Bool
 isAlive Pid { pQueue = q } =
   atomically $ readTVar q >>= return . isJust
+
+
+link :: Pid a -> IO () -> IO ()
+link Pid { pLinked = cell } handler = do
+  added <- atomically $ do
+    content <- readTVar cell
+    case content of
+      Just linked -> do
+        writeTVar cell $ Just $ handler : linked
+        return True
+      Nothing ->
+        return False
+  when (not added) handler
+
+wait :: Pid a -> IO ()
+wait pid = do
+ done <- newEmptyMVar
+ link pid $ putMVar done ()
+ takeMVar done

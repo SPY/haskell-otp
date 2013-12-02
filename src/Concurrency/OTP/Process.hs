@@ -12,6 +12,7 @@ module Concurrency.OTP.Process (
 ) where
 
 import Data.Maybe (isJust, fromJust)
+import Data.Unique (Unique, newUnique)
 import Control.Concurrent (
     ThreadId,
     forkFinally,
@@ -36,19 +37,24 @@ import Control.Exception.Base (SomeException(..))
 
 type Queue a = MVar (Maybe (Chan a))
 data Pid a = Pid {
+    pUniq :: Unique,
     pQueue :: Queue a,
     pTID :: ThreadId
   }
+
+instance Eq (Pid a) where
+  Pid { pUniq = u1 } == Pid { pUniq = u2 } = u1 == u2
 
 type Process a = ReaderT (Pid a) IO
 
 spawn :: Process a () -> IO (Pid a)
 spawn body = do
   queue <- newChan >>= newMVar . Just
+  u <- newUnique
   tid <- flip forkFinally (processFinalizer queue) $ do
     tid <- myThreadId
-    runReaderT body (Pid queue tid)
-  return $ Pid queue tid
+    runReaderT body (Pid u queue tid)
+  return $ Pid u queue tid
 
 processFinalizer :: Queue a -> Either SomeException () -> IO ()
 processFinalizer queue = const $ putMVar queue Nothing

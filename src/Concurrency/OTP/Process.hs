@@ -1,4 +1,3 @@
-{-# LANGUAGE FlexibleContexts #-}
 module Concurrency.OTP.Process (
   Pid,
   Reason(..),

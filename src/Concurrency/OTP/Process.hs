@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 module Concurrency.OTP.Process (
   Pid,
   Reason(..),
@@ -38,11 +39,16 @@ import Control.Concurrent.STM.TVar (
     TVar,
     newTVar,
     readTVar,
-    writeTVar
+    writeTVar,
+    modifyTVar'
   )
 import Control.Monad (when)
 import Control.Monad.Reader (ReaderT(..), ask, liftIO)
-import Control.Exception.Base (SomeException(..))
+import Control.Exception.Base (
+    Exception(..),
+    SomeException,
+    AsyncException(ThreadKilled)
+  )
 
 type Queue a = TVar (Maybe (TQueue a))
 
@@ -55,7 +61,7 @@ data Pid a = Pid {
   }
 
 data Reason = Normal
-            | Terminate
+            | Aborted
             | Error String
   deriving (Show, Eq)
 
@@ -73,24 +79,33 @@ spawn body = do
   u <- newUnique
   linked <- atomically $ newTVar $ Just []
   reason <- atomically $ newTVar Nothing
-  tid <- flip forkFinally (processFinalizer queue linked) $ do
+  tid <- flip forkFinally (processFinalizer queue linked reason) $ do
     tid <- myThreadId
     runReaderT body $ Pid u queue tid linked reason
   return $ Pid u queue tid linked reason
 
+resultToReason :: Either SomeException () -> Reason
+resultToReason (Left e)
+  | fromException e == Just ThreadKilled = Aborted
+  | otherwise = Error $ show e
+resultToReason (Right ()) = Normal
+
 processFinalizer :: Queue a
                  -> TVar (Maybe [Reason -> IO ()])
+                 -> TVar (Maybe Reason)
                  -> Either SomeException () -> IO ()
-processFinalizer queue linked res = do
-  reason <- case res of
-    Left err -> return $ Error $ show err
-    Right () -> return $ Normal
-  handlers <- atomically $ do
+processFinalizer queue linked reason result = do
+  (handlers, r) <- atomically $ do
     writeTVar queue Nothing
     Just hs <- readTVar linked
     writeTVar linked Nothing
-    return hs
-  mapM_ ($ reason) handlers
+    modifyTVar' reason $ \r ->
+      case r of
+        Nothing -> Just $ resultToReason result
+        Just _ -> r
+    Just r <- readTVar reason
+    return (hs, r)
+  mapM_ ($ r) handlers
     
 sendIO :: Pid a -> a -> IO ()
 sendIO Pid { pQueue = cell } msg = atomically $ do
@@ -112,9 +127,12 @@ self :: Process a (Pid a)
 self = ask
 
 exit :: Process a ()
-exit = liftIO $ do
-  tId <- myThreadId
-  killThread tId
+exit = do
+  Pid { pReason = reason } <- ask
+  liftIO $ do
+    tId <- myThreadId
+    atomically $ writeTVar reason $ Just Normal
+    killThread tId
 
 terminate :: Pid a -> IO ()
 terminate Pid { pTID = tid } = killThread tid

@@ -75,10 +75,17 @@ test_2processInteraction = do
   takeMVar resp >>= assertEqual msg
 
 test_processExit = do
-  resp <- newEmptyMVar
+  reason <- newEmptyMVar
   pid <- spawn $ exit
-  yield
+  linkIO pid $ putMVar reason
+  takeMVar reason >>= assertEqual Normal
   isAlive pid >>= assertBool . not
+
+test_processException = do
+  reason <- newEmptyMVar
+  pid <- spawn $ let x = 1 / 0 in x `seq` return ()
+  linkIO pid $ putMVar reason
+  takeMVar reason >>= assertEqual Normal
 
 test_terminate = do
   msg <- newMessage
@@ -92,4 +99,4 @@ test_terminate = do
   linkIO pid $ putMVar reason
   terminate pid
   sendIO pid msg
-  takeMVar reason >>= assertEqual Normal
+  takeMVar reason >>= assertEqual Aborted

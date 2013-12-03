@@ -92,7 +92,7 @@ sendIO Pid { pQueue = cell } msg = atomically $ do
   when (isJust queue) $
     writeTQueue (fromJust queue) msg
 
-send :: Pid a -> a -> Process a ()
+send :: Pid a -> a -> Process b ()
 send pid msg = liftIO $ sendIO pid msg
 
 receive :: Process a a

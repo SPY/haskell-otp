@@ -57,6 +57,17 @@ test_send2Messages = do
   sendIO pid msg
   takeMVar resp >>= assertEqual msg
 
+test_2processInteraction = do
+  msg <- newMessage
+  resp <- newEmptyMVar
+  pid <- spawn $ do
+    from <- receive
+    send from msg
+  spawn $ do
+    self >>= send pid
+    receive >>= liftIO . putMVar resp
+  takeMVar resp >>= assertEqual msg
+
 test_terminate = do
   msg <- newMessage
   resp <- newEmptyMVar

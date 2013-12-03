@@ -83,9 +83,9 @@ test_processExit = do
 
 test_processException = do
   reason <- newEmptyMVar
-  pid <- spawn $ let x = 1 / 0 in x `seq` return ()
+  pid <- spawn $ error "test"
   linkIO pid $ putMVar reason
-  takeMVar reason >>= assertEqual Normal
+  takeMVar reason >>= assertEqual (Error "test")
 
 test_terminate = do
   msg <- newMessage

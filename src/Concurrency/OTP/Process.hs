@@ -1,5 +1,6 @@
 module Concurrency.OTP.Process (
   Pid,
+  Reason(..),
   spawn,
   linkIO,
   send,
@@ -49,7 +50,8 @@ data Pid a = Pid {
     pUniq :: Unique,
     pQueue :: Queue a,
     pTID :: ThreadId,
-    pLinked :: TVar (Maybe [IO ()])
+    pLinked :: TVar (Maybe [Reason -> IO ()]),
+    pReason :: TVar (Maybe Reason)
   }
 
 data Reason = Normal
@@ -70,21 +72,25 @@ spawn body = do
   queue <- atomically $ newTQueue >>= newTVar . Just
   u <- newUnique
   linked <- atomically $ newTVar $ Just []
+  reason <- atomically $ newTVar Nothing
   tid <- flip forkFinally (processFinalizer queue linked) $ do
     tid <- myThreadId
-    runReaderT body (Pid u queue tid linked)
-  return $ Pid u queue tid linked
+    runReaderT body $ Pid u queue tid linked reason
+  return $ Pid u queue tid linked reason
 
 processFinalizer :: Queue a
-                 -> TVar (Maybe [IO ()])
+                 -> TVar (Maybe [Reason -> IO ()])
                  -> Either SomeException () -> IO ()
-processFinalizer queue linked = const $ do
+processFinalizer queue linked res = do
+  reason <- case res of
+    Left err -> return $ Error $ show err
+    Right () -> return $ Normal
   handlers <- atomically $ do
     writeTVar queue Nothing
     Just hs <- readTVar linked
     writeTVar linked Nothing
     return hs
-  sequence_ handlers
+  mapM_ ($ reason) handlers
     
 sendIO :: Pid a -> a -> IO ()
 sendIO Pid { pQueue = cell } msg = atomically $ do
@@ -117,20 +123,20 @@ isAlive :: Pid a -> IO Bool
 isAlive Pid { pQueue = q } =
   atomically $ readTVar q >>= return . isJust
 
-linkIO :: Pid a -> IO () -> IO ()
-linkIO Pid { pLinked = cell } handler = do
-  added <- atomically $ do
+linkIO :: Pid a -> (Reason -> IO ()) -> IO ()
+linkIO Pid { pLinked = cell, pReason = r } handler = do
+  reason <- atomically $ do
     content <- readTVar cell
     case content of
       Just linked -> do
         writeTVar cell $ Just $ handler : linked
-        return True
+        return Nothing
       Nothing ->
-        return False
-  when (not added) handler
+        readTVar r
+  when (isJust reason) $ handler $ fromJust reason
 
 wait :: Pid a -> IO ()
 wait pid = do
  done <- newEmptyMVar
- linkIO pid $ putMVar done ()
+ linkIO pid $ const $ putMVar done ()
  takeMVar done

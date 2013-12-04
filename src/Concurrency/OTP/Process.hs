@@ -1,6 +1,9 @@
+{-# LANGUAGE FunctionalDependencies, FlexibleInstances #-}
 module Concurrency.OTP.Process (
   Pid,
+  Process,
   Reason(..),
+  IsProcess(..),
   spawn,
   linkIO,
   send,
@@ -49,6 +52,9 @@ import Control.Exception.Base (
     AsyncException(ThreadKilled)
   )
 
+class IsProcess a p | p -> a where
+  getPid :: p -> Pid a
+
 type Queue a = TVar (Maybe (TQueue a))
 
 data Pid a = Pid {
@@ -58,6 +64,9 @@ data Pid a = Pid {
     pLinked :: TVar (Maybe [Reason -> IO ()]),
     pReason :: TVar (Maybe Reason)
   }
+
+instance IsProcess a (Pid a) where
+  getPid = id
 
 data Reason = Normal
             | Aborted
@@ -70,9 +79,9 @@ instance Eq (Pid a) where
 instance Show (Pid a) where
   show Pid { pUniq = u } = "Pid<" ++ show (hashUnique u) ++ ">"
 
-type Process a = ReaderT (Pid a) IO
+type Process msg = ReaderT (Pid msg) IO
 
-spawn :: Process a () -> IO (Pid a)
+spawn :: Process msg () -> IO (Pid msg)
 spawn body = do
   queue <- atomically $ newTQueue >>= newTVar . Just
   u <- newUnique
@@ -89,7 +98,7 @@ resultToReason (Left e)
   | otherwise = Error $ show e
 resultToReason (Right ()) = Normal
 
-processFinalizer :: Queue a
+processFinalizer :: Queue msg
                  -> TVar (Maybe [Reason -> IO ()])
                  -> TVar (Maybe Reason)
                  -> Either SomeException () -> IO ()
@@ -106,26 +115,26 @@ processFinalizer queue linked reason result = do
     return (hs, r)
   mapM_ ($ r) handlers
     
-sendIO :: Pid a -> a -> IO ()
+sendIO :: Pid msg -> msg -> IO ()
 sendIO Pid { pQueue = cell } msg = atomically $ do
   queue <- readTVar cell
   when (isJust queue) $
     writeTQueue (fromJust queue) msg
 
-send :: Pid a -> a -> Process b ()
+send :: Pid msg -> msg -> Process a ()
 send pid msg = liftIO $ sendIO pid msg
 
-receive :: Process a a
+receive :: Process msg msg
 receive = do
   Pid { pQueue = cell } <- ask
   liftIO $ atomically $ do
     Just queue <- readTVar cell -- always Just here
     readTQueue queue
 
-self :: Process a (Pid a)
+self :: Process msg (Pid msg)
 self = ask
 
-exit :: Process a ()
+exit :: Process msg ()
 exit = do
   Pid { pReason = reason } <- ask
   liftIO $ do
@@ -133,15 +142,19 @@ exit = do
     atomically $ writeTVar reason $ Just Normal
     killThread tId
 
-terminate :: Pid a -> IO ()
-terminate Pid { pTID = tid } = killThread tid
+terminate :: (IsProcess msg p) => p -> IO ()
+terminate p =
+  let Pid { pTID = tid } = getPid p
+  in killThread tid
 
-isAlive :: Pid a -> IO Bool
-isAlive Pid { pQueue = q } =
-  atomically $ readTVar q >>= return . isJust
+isAlive :: (IsProcess msg p ) => p -> IO Bool
+isAlive p =
+  let Pid { pQueue = q } = getPid p
+  in atomically $ readTVar q >>= return . isJust
 
-linkIO :: Pid a -> (Reason -> IO ()) -> IO ()
-linkIO Pid { pLinked = cell, pReason = r } handler = do
+linkIO :: (IsProcess msg p) => p -> (Reason -> IO ()) -> IO ()
+linkIO p handler = do
+  let Pid { pLinked = cell, pReason = r } = getPid p
   reason <- atomically $ do
     content <- readTVar cell
     case content of
@@ -152,8 +165,8 @@ linkIO Pid { pLinked = cell, pReason = r } handler = do
         readTVar r
   when (isJust reason) $ handler $ fromJust reason
 
-wait :: Pid a -> IO ()
-wait pid = do
+wait :: (IsProcess msg p) => p -> IO ()
+wait p = do
  done <- newEmptyMVar
- linkIO pid $ const $ putMVar done ()
+ linkIO (getPid p) $ const $ putMVar done ()
  takeMVar done

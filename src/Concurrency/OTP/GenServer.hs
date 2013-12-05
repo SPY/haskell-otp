@@ -1,18 +1,19 @@
 {-# LANGUAGE FunctionalDependencies #-}
 module Concurrency.OTP.GenServer (
   GenServerState(..),
+  StartStatus(..),
   start,
   call,
   cast
 ) where
 
-import Control.Applicative ((<$>))
 import Control.Monad.State
 import Control.Concurrent.MVar (
     MVar,
     newEmptyMVar,
     putMVar,
-    takeMVar
+    takeMVar,
+    isEmptyMVar
   )
 
 import Concurrency.OTP.Process
@@ -33,8 +34,20 @@ instance IsProcess (Request req res) (GenServer req res) where
 data Request req res = Call req (MVar (Maybe res))
                      | Cast req
 
-start :: (GenServerState req res s) => s -> IO (GenServer req res)
-start initState = GenServer <$> (spawn $ evalStateT handler initState)
+data StartStatus req res = Ok (GenServer req res) | Fail
+
+start :: (GenServerState req res s) => Process (Request req res) s -> IO (StartStatus req res)
+start initFn = do
+  after <- newEmptyMVar
+  pid <- spawn $ do
+    initState <- initFn
+    self' <- self
+    liftIO $ putMVar after $ Ok $ GenServer self'
+    evalStateT handler initState
+  linkIO pid $ const $ do -- TODO: add unlink on success
+    isEmpty <- isEmptyMVar after
+    when isEmpty $ putMVar after Fail
+  takeMVar after
 
 handler :: (GenServerState req res s) => GenServerM s req res ()
 handler = forever $ do

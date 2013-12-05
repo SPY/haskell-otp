@@ -15,6 +15,12 @@ import Control.Concurrent.MVar (
     takeMVar,
     isEmptyMVar
   )
+import Data.IORef (
+    IORef,
+    newIORef,
+    readIORef,
+    writeIORef
+  )
 
 import Concurrency.OTP.Process
 
@@ -23,6 +29,9 @@ type GenServerM s req res = StateT s (Process (Request req res))
 class GenServerState req res s | s -> req, s -> res where
   handle_call :: req -> GenServerM s req res res
   handle_cast :: req -> GenServerM s req res ()
+  onTerminate :: s -> IO ()
+  
+  onTerminate = const $ return ()
 
 data GenServer req res = GenServer {
     gsPid :: Pid (Request req res)
@@ -41,24 +50,33 @@ start initFn = do
   after <- newEmptyMVar
   pid <- spawn $ do
     initState <- initFn
-    self' <- self
-    liftIO $ putMVar after $ Ok $ GenServer self'
-    evalStateT handler initState
+    stateRef <- liftIO $ newIORef initState
+    liftIO $ putMVar after $ Just stateRef
+    handler stateRef
   linkIO pid $ const $ do -- TODO: add unlink on success
     isEmpty <- isEmptyMVar after
-    when isEmpty $ putMVar after Fail
-  takeMVar after
+    when isEmpty $ putMVar after Nothing
+  result <- takeMVar after
+  case result of
+    Just stateRef -> do
+      linkIO pid $ const $ do
+        st <- readIORef stateRef
+        onTerminate st
+      return $ Ok $ GenServer pid
+    Nothing -> return Fail
 
-handler :: (GenServerState req res s) => GenServerM s req res ()
-handler = forever $ do
-  req <- lift receive
+handler :: (GenServerState req res s) => IORef s -> Process (Request req res) ()
+handler stateRef = forever $ do
+  req <- receive
+  serverState <- liftIO $ readIORef stateRef
   case req of
     Call r res -> do
-      result <- handle_call r
+      (result, newState) <- runStateT (handle_call r) serverState
+      liftIO $ writeIORef stateRef newState
       liftIO $ putMVar res $ Just result
     Cast r -> do
-      handle_cast r
-      return ()
+      newState <- execStateT (handle_cast r) serverState
+      liftIO $ writeIORef stateRef newState
 
 call :: GenServer req res -> req -> IO res
 call GenServer { gsPid = pid } msg = do

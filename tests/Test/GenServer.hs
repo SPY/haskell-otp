@@ -6,8 +6,10 @@ import Test.Framework
 
 import Control.Monad.State
 import Control.Concurrent.MVar (
+    MVar,
     newEmptyMVar,
     putMVar,
+    takeMVar,
     isEmptyMVar
   )
 
@@ -22,6 +24,14 @@ instance GenServerState Command Int CounterState where
   
   handle_cast Inc =
     modify $ \st -> st { counter = counter st + 1 }
+
+data TerminatedState = TS { termCell :: MVar () }
+
+instance GenServerState Int () TerminatedState where
+  handle_call 1 = return () -- for fail
+  handle_cast 1 = return ()
+
+  onTerminate (TS cell) = putMVar cell ()
 
 test_successStart = do
   cell <- newEmptyMVar
@@ -45,3 +55,11 @@ test_cast = do
   call serv Get >>= assertEqual 1
   cast serv Inc
   call serv Get >>= assertEqual 2
+
+test_terminate = do
+  cell <- newEmptyMVar
+  Ok serv <- start $ return $ TS cell
+  call serv 1 -- ok
+  isEmptyMVar cell >>= assertBool
+  cast serv 2 -- fail
+  takeMVar cell >>= assertEqual ()

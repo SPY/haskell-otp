@@ -19,6 +19,7 @@ module Concurrency.OTP.Process (
 
 import Data.Maybe (isJust, fromJust)
 import Data.Unique (Unique, newUnique, hashUnique)
+import Control.Applicative
 import Control.Concurrent (
     ThreadId,
     forkFinally,
@@ -86,15 +87,21 @@ type Process msg = ReaderT (Pid msg) IO
 
 spawn :: Process msg () -> IO (Pid msg)
 spawn body = do
-  wrQueue <- atomically $ newBroadcastTMChan
-  rQueue  <- atomically $ dupTMChan wrQueue
   u <- newUnique
-  linked <- atomically $ newTVar $ Just []
-  reason <- atomically $ newTVar Nothing
-  tid <- flip forkFinally (processFinalizer rQueue linked reason) $ do
+  pid <- atomically $
+    Pid <$> pure u
+        <*> newBroadcastTMChan
+        <*> pure undefined
+        <*> newTVar (Just [])
+        <*> newTVar Nothing
+  -- We need this to workaround a bug in stm-chans where
+  -- closing of broadcast channel doesn't lead to closing
+  -- of the duplicated channel
+  rQueue <- atomically $ dupTMChan (pQueue pid)
+  tid <- flip forkFinally (processFinalizer rQueue pid) $ do
     tid <- myThreadId
-    runReaderT body $ Pid u rQueue tid linked reason
-  return $ Pid u wrQueue tid linked reason
+    runReaderT body $ pid{pTID=tid,pQueue=rQueue}
+  return $ pid{pTID=tid}
 
 resultToReason :: Either SomeException () -> Reason
 resultToReason (Left e)
@@ -102,11 +109,10 @@ resultToReason (Left e)
   | otherwise = Error $ show e
 resultToReason (Right ()) = Normal
 
-processFinalizer :: Queue msg
-                 -> TVar (Maybe [Reason -> IO ()])
-                 -> TVar (Maybe Reason)
+processFinalizer :: TMChan a
+                 -> Pid a
                  -> Either SomeException () -> IO ()
-processFinalizer queue linked reason result = do
+processFinalizer queue Pid{pLinked=linked,pReason=reason} result = do
   (handlers, r) <- atomically $ do
     closeTMChan queue
     Just hs <- readTVar linked

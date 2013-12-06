@@ -31,12 +31,14 @@ import Control.Concurrent.MVar (
     putMVar
   )
 import Control.Monad.STM (atomically)
-import Control.Concurrent.STM.TQueue (
-    TQueue,
-    newTQueue,
-    readTQueue,
-    writeTQueue
-  )
+import Control.Concurrent.STM.TMChan (
+    TMChan,
+    newTMChan,
+    readTMChan,
+    writeTMChan,
+    closeTMChan,
+    isClosedTMChan
+    )
 import Control.Concurrent.STM.TVar (
     TVar,
     newTVar,
@@ -55,7 +57,7 @@ import Control.Exception.Base (
 class IsProcess a p | p -> a where
   getPid :: p -> Pid a
 
-type Queue a = TVar (Maybe (TQueue a))
+type Queue a = TMChan a
 
 data Pid a = Pid {
     pUniq :: Unique,
@@ -83,7 +85,7 @@ type Process msg = ReaderT (Pid msg) IO
 
 spawn :: Process msg () -> IO (Pid msg)
 spawn body = do
-  queue <- atomically $ newTQueue >>= newTVar . Just
+  queue <- atomically $ newTMChan
   u <- newUnique
   linked <- atomically $ newTVar $ Just []
   reason <- atomically $ newTVar Nothing
@@ -104,7 +106,7 @@ processFinalizer :: Queue msg
                  -> Either SomeException () -> IO ()
 processFinalizer queue linked reason result = do
   (handlers, r) <- atomically $ do
-    writeTVar queue Nothing
+    closeTMChan queue
     Just hs <- readTVar linked
     writeTVar linked Nothing
     modifyTVar' reason $ \r ->
@@ -116,10 +118,7 @@ processFinalizer queue linked reason result = do
   mapM_ ($ r) handlers
     
 sendIO :: Pid msg -> msg -> IO ()
-sendIO Pid { pQueue = cell } msg = atomically $ do
-  queue <- readTVar cell
-  when (isJust queue) $
-    writeTQueue (fromJust queue) msg
+sendIO Pid { pQueue = cell } msg = atomically $ writeTMChan cell msg 
 
 send :: Pid msg -> msg -> Process a ()
 send pid msg = liftIO $ sendIO pid msg
@@ -127,9 +126,7 @@ send pid msg = liftIO $ sendIO pid msg
 receive :: Process msg msg
 receive = do
   Pid { pQueue = cell } <- ask
-  liftIO $ atomically $ do
-    Just queue <- readTVar cell -- always Just here
-    readTQueue queue
+  liftIO $ atomically $ fmap fromJust (readTMChan cell)
 
 self :: Process msg (Pid msg)
 self = ask
@@ -150,7 +147,7 @@ terminate p =
 isAlive :: (IsProcess msg p ) => p -> IO Bool
 isAlive p =
   let Pid { pQueue = q } = getPid p
-  in atomically $ readTVar q >>= return . isJust
+  in atomically $ fmap not (isClosedTMChan q)
 
 linkIO :: (IsProcess msg p) => p -> (Reason -> IO ()) -> IO ()
 linkIO p handler = do

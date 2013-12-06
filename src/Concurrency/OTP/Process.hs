@@ -33,10 +33,11 @@ import Control.Concurrent.MVar (
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TMChan (
     TMChan,
-    newTMChan,
+    newBroadcastTMChan,
     readTMChan,
     writeTMChan,
     closeTMChan,
+    dupTMChan,
     isClosedTMChan
     )
 import Control.Concurrent.STM.TVar (
@@ -85,14 +86,15 @@ type Process msg = ReaderT (Pid msg) IO
 
 spawn :: Process msg () -> IO (Pid msg)
 spawn body = do
-  queue <- atomically $ newTMChan
+  wrQueue <- atomically $ newBroadcastTMChan
+  rQueue  <- atomically $ dupTMChan wrQueue
   u <- newUnique
   linked <- atomically $ newTVar $ Just []
   reason <- atomically $ newTVar Nothing
-  tid <- flip forkFinally (processFinalizer queue linked reason) $ do
+  tid <- flip forkFinally (processFinalizer rQueue linked reason) $ do
     tid <- myThreadId
-    runReaderT body $ Pid u queue tid linked reason
-  return $ Pid u queue tid linked reason
+    runReaderT body $ Pid u rQueue tid linked reason
+  return $ Pid u wrQueue tid linked reason
 
 resultToReason :: Either SomeException () -> Reason
 resultToReason (Left e)

@@ -74,7 +74,7 @@ class IsProcess a p | p -> a where
 
 type Queue a = TMChan a
 
-newtype LinkId = LinkId Int deriving (Show, Eq, Ord)
+newtype LinkId = LinkId Unique deriving (Eq, Ord)
 
 data Pid a = Pid {
     pUniq :: Unique,
@@ -175,7 +175,7 @@ isAlive p =
 linkIO :: (IsProcess msg p) => p -> (Reason -> IO ()) -> IO LinkId
 linkIO p handler = do
   let Pid { pLinked = cell, pReason = r } = getPid p
-  linkId <- LinkId . hashUnique <$> newUnique
+  linkId <- LinkId <$> newUnique
   reason <- atomically $ do
     content <- readTVar cell
     case content of

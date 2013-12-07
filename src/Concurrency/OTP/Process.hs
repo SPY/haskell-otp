@@ -8,6 +8,7 @@ module Concurrency.OTP.Process (
   spawn,
   linkIO,
   unlinkIO,
+  link,
   send,
   sendIO,
   receive,
@@ -141,7 +142,7 @@ processFinalizer queue Pid{pLinked=linked,pReason=reason} result = do
   mapM_ ($ r) handlers
     
 sendIO :: Pid msg -> msg -> IO ()
-sendIO Pid { pQueue = cell } msg = atomically $ writeTMChan cell msg 
+sendIO Pid { pQueue = cell } msg = atomically $ writeTMChan cell msg
 
 send :: Pid msg -> msg -> Process a ()
 send pid msg = liftIO $ sendIO pid msg
@@ -186,6 +187,11 @@ linkIO p handler = do
         readTVar r
   when (isJust reason) $ handler $ fromJust reason
   return linkId
+
+link :: (IsProcess msg p) => p -> Process msg LinkId
+link p = do
+  self' <- self
+  liftIO $ linkIO p $ const $ terminate self'
 
 unlinkIO :: (IsProcess msg p) => p -> LinkId -> IO ()
 unlinkIO p linkId = do

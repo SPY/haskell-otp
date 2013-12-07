@@ -46,6 +46,13 @@ test_unlink = do
   takeMVar handler2
   isEmptyMVar handler1 >>= assertBool
 
+test_processLink = do
+  waitCell <- newEmptyMVar
+  pid <- spawn $ liftIO $ ms 50
+  pid2 <- spawn $ link pid >> liftIO (takeMVar waitCell)
+  wait pid2
+  assertBool True
+
 data Message = Message Unique 
   deriving (Eq)
 

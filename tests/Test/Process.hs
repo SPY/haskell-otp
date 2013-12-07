@@ -36,6 +36,16 @@ test_isAlive = do
   wait pid
   isAlive pid >>= assertBool . not
 
+test_unlink = do
+  handler1 <- newEmptyMVar
+  handler2 <- newEmptyMVar
+  pid <- spawn $ return ()
+  linkId <- linkIO pid $ putMVar handler1
+  linkIO pid $ putMVar handler2
+  unlinkIO pid linkId
+  takeMVar handler2
+  isEmptyMVar handler1 >>= assertBool
+
 data Message = Message Unique 
   deriving (Eq)
 

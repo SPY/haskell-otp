@@ -4,8 +4,10 @@ module Concurrency.OTP.Process (
   Process,
   Reason(..),
   IsProcess(..),
+  LinkId,
   spawn,
   linkIO,
+  unlinkIO,
   send,
   sendIO,
   receive,
@@ -19,7 +21,18 @@ module Concurrency.OTP.Process (
 
 import Data.Maybe (isJust, fromJust)
 import Data.Unique (Unique, newUnique, hashUnique)
-import Control.Applicative
+import Data.Map (
+    Map,
+    empty,
+    insert,
+    delete,
+    elems
+  )
+import Control.Applicative (
+    (<$>),
+    (<*>),
+    pure
+  )
 import Control.Concurrent (
     ThreadId,
     forkFinally,
@@ -61,11 +74,13 @@ class IsProcess a p | p -> a where
 
 type Queue a = TMChan a
 
+newtype LinkId = LinkId Int deriving (Show, Eq, Ord)
+
 data Pid a = Pid {
     pUniq :: Unique,
     pQueue :: Queue a,
     pTID :: ThreadId,
-    pLinked :: TVar (Maybe [Reason -> IO ()]),
+    pLinked :: TVar (Maybe (Map LinkId (Reason -> IO ()))),
     pReason :: TVar (Maybe Reason)
   }
 
@@ -92,7 +107,7 @@ spawn body = do
     Pid <$> pure u
         <*> newBroadcastTMChan
         <*> pure undefined
-        <*> newTVar (Just [])
+        <*> newTVar (Just empty)
         <*> newTVar Nothing
   -- We need this to workaround a bug in stm-chans where
   -- closing of broadcast channel doesn't lead to closing
@@ -122,7 +137,7 @@ processFinalizer queue Pid{pLinked=linked,pReason=reason} result = do
         Nothing -> Just $ resultToReason result
         Just _ -> r
     Just r <- readTVar reason
-    return (hs, r)
+    return (elems hs, r)
   mapM_ ($ r) handlers
     
 sendIO :: Pid msg -> msg -> IO ()
@@ -157,18 +172,28 @@ isAlive p =
   let Pid { pQueue = q } = getPid p
   in atomically $ fmap not (isClosedTMChan q)
 
-linkIO :: (IsProcess msg p) => p -> (Reason -> IO ()) -> IO ()
+linkIO :: (IsProcess msg p) => p -> (Reason -> IO ()) -> IO LinkId
 linkIO p handler = do
   let Pid { pLinked = cell, pReason = r } = getPid p
+  linkId <- LinkId . hashUnique <$> newUnique
   reason <- atomically $ do
     content <- readTVar cell
     case content of
       Just linked -> do
-        writeTVar cell $ Just $ handler : linked
+        writeTVar cell $ Just $ insert linkId handler linked
         return Nothing
       Nothing ->
         readTVar r
   when (isJust reason) $ handler $ fromJust reason
+  return linkId
+
+unlinkIO :: (IsProcess msg p) => p -> LinkId -> IO ()
+unlinkIO p linkId = do
+  let Pid { pLinked = cell } = getPid p
+  atomically $ do
+    handlers <- readTVar cell
+    when (isJust handlers) $ do
+      writeTVar cell $ Just $ delete linkId $ fromJust handlers
 
 wait :: (IsProcess msg p) => p -> IO ()
 wait p = do

@@ -53,10 +53,11 @@ start initFn = do
     stateRef <- liftIO $ newIORef initState
     liftIO $ putMVar after $ Just stateRef
     handler stateRef
-  linkIO pid $ const $ do -- TODO: add unlink on success
+  failLink <- linkIO pid $ const $ do
     isEmpty <- isEmptyMVar after
     when isEmpty $ putMVar after Nothing
   result <- takeMVar after
+  unlinkIO pid failLink
   case result of
     Just stateRef -> do
       linkIO pid $ const $ do

@@ -41,10 +41,12 @@ test_successStart = do
   isEmptyMVar cell >>= assertBool . not
 
 test_failureStart = do
-  Fail <- start $ do
+  result <- start $ do
     error "Bad params"
     return $ Counter 0
-  assertBool True
+  assertBool $ isFail result
+  where isFail Fail = True
+        isFail _    = False
 
 test_call = do
   Ok serv <- start $ return $ Counter 0

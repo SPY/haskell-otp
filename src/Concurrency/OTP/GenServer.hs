@@ -1,7 +1,8 @@
-{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE FunctionalDependencies, DeriveDataTypeable #-}
 module Concurrency.OTP.GenServer (
   GenServerState(..),
   StartStatus(..),
+  ServerIsDead(..),
   start,
   call,
   cast
@@ -21,6 +22,11 @@ import Data.IORef (
     readIORef,
     writeIORef
   )
+import Control.Exception (
+    Exception,
+    throw
+  )
+import Data.Typeable (Typeable)
 
 import Concurrency.OTP.Process
 
@@ -79,6 +85,10 @@ handler stateRef = forever $ do
       newState <- execStateT (handle_cast r) serverState
       liftIO $ writeIORef stateRef newState
 
+data ServerIsDead = ServerIsDead deriving (Show, Typeable)
+
+instance Exception ServerIsDead
+
 call :: GenServer req res -> req -> IO res
 call GenServer { gsPid = pid } msg = do
   response <- newEmptyMVar
@@ -86,7 +96,7 @@ call GenServer { gsPid = pid } msg = do
   result <- takeMVar response
   case result of
     Just r -> return r
-    Nothing -> error "GenServer is dead"
+    Nothing -> throw ServerIsDead
 
 cast :: GenServer req res -> req -> IO ()
 cast GenServer { gsPid = pid } msg =

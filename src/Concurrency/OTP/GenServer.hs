@@ -8,6 +8,7 @@ module Concurrency.OTP.GenServer (
   start,
   call,
   cast,
+  replyWith,
   reply,
   noreply,
   stop,
@@ -15,6 +16,7 @@ module Concurrency.OTP.GenServer (
 ) where
 
 import Control.Monad.State
+import Control.Monad.Reader
 import Control.Concurrent.MVar (
     MVar,
     newEmptyMVar,
@@ -26,20 +28,24 @@ import Data.IORef (
     IORef,
     newIORef,
     readIORef,
-    writeIORef
+    writeIORef,
+    atomicModifyIORef
   )
 import Control.Exception (
     Exception,
     throw
   )
 import Data.Typeable (Typeable)
+import qualified Data.Map as Map
+import Data.Unique (Unique, newUnique)
+import Data.Maybe (fromJust, isJust)
 
 import Concurrency.OTP.Process
 
-type GenServerM s req res = StateT s (Process (Request req res))
+type GenServerM s req res = ReaderT (IORef (Map.Map Unique (MVar (Maybe res)))) (StateT s (Process (Request req res)))
 
 class GenServerState req res s | s -> req, s -> res where
-  handle_call :: req -> GenServerM s req res (CallResult res)
+  handle_call :: req -> Unique -> GenServerM s req res (CallResult res)
   handle_cast :: req -> GenServerM s req res CastResult
   onTerminate :: s -> IO ()
   
@@ -105,31 +111,36 @@ start initFn = do
     Nothing -> return Fail
 
 handler :: (GenServerState req res s) => IORef s -> Process (Request req res) ()
-handler stateRef = forever $ do
-  req <- receive
-  serverState <- liftIO $ readIORef stateRef
-  case req of
-    Call r res -> do
-      (result, newState) <- runStateT (handle_call r) serverState
-      liftIO $ writeIORef stateRef newState
-      case result of
-        Reply response ->
-          liftIO $ putMVar res $ Just response
-        NoReply -> 
-          return ()
-        ReplyAndStop response _reason -> do
-          liftIO $ putMVar res $ Just response
-          exit
-        Stop _reason ->
-          exit
-    Cast r -> do
-      (result, newState) <- runStateT (handle_cast r) serverState
-      liftIO $ writeIORef stateRef newState
-      case result of
-        CastNoReply ->
-          return ()
-        CastStop _reason ->
-          exit
+handler stateRef = do
+  requests <- liftIO $ newIORef Map.empty
+  forever $ do
+    req <- receive
+    serverState <- liftIO $ readIORef stateRef
+    case req of
+      Call r res -> do
+        requestId <- liftIO newUnique
+        let stateTAction = runReaderT (handle_call r requestId) requests
+        (result, newState) <- runStateT stateTAction serverState
+        liftIO $ writeIORef stateRef newState
+        case result of
+          Reply response ->
+            liftIO $ putMVar res $ Just response
+          NoReply ->
+            liftIO $ atomicModifyIORef requests $ \rs ->
+              (Map.insert requestId res rs, ())
+          ReplyAndStop response _reason -> do
+            liftIO $ putMVar res $ Just response
+            exit
+          Stop _reason ->
+            exit
+      Cast r -> do
+        (result, newState) <- runStateT (runReaderT (handle_cast r) requests) serverState
+        liftIO $ writeIORef stateRef newState
+        case result of
+          CastNoReply ->
+            return ()
+          CastStop _reason ->
+            exit
 
 data ServerIsDead = ServerIsDead deriving (Show, Typeable)
 
@@ -149,3 +160,10 @@ call GenServer { gsPid = pid } msg = do
 cast :: GenServer req res -> req -> IO ()
 cast GenServer { gsPid = pid } msg =
   sendIO pid $ Cast msg
+
+replyWith :: Unique -> res -> GenServerM s req res ()
+replyWith reqId response = do
+  requestsRef <- ask
+  res <- liftIO $ atomicModifyIORef requestsRef $ \rs ->
+    (Map.delete reqId rs, Map.lookup reqId rs)
+  when (isJust res) $ liftIO $ putMVar (fromJust res) $ Just response

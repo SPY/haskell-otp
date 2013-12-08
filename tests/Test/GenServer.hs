@@ -12,6 +12,8 @@ import Control.Concurrent.MVar (
     takeMVar,
     isEmptyMVar
   )
+import Data.Unique (Unique)
+import Control.Concurrent (threadDelay, forkIO)
 
 import Concurrency.OTP.GenServer
 import Concurrency.OTP.Process
@@ -21,7 +23,7 @@ data CounterState = Counter { counter :: Int }
 data Command = Get | Inc
 
 instance GenServerState Command Int CounterState where
-  handle_call Get = gets $ reply . counter
+  handle_call Get _ = gets $ reply . counter
   
   handle_cast Inc = do
     modify $ \st -> st { counter = counter st + 1 }
@@ -49,7 +51,7 @@ test_call = do
 data StopOnCallState = StopOnCallState
 
 instance GenServerState (MVar ()) () StopOnCallState where
-  handle_call _ = return $ stop "stop"
+  handle_call _ _ = return $ stop "stop"
   handle_cast r = do
     liftIO $ putMVar r ()
     return $ stop "stop"
@@ -69,13 +71,32 @@ test_stopOnCast = do
 data ReplyAndStopState = ReplyAndStopState
 
 instance GenServerState () () ReplyAndStopState where
-  handle_call () = return $ replyAndStop () "stop"
+  handle_call () _ = return $ replyAndStop () "stop"
   handle_cast () = return noreply
 
 test_replyAndStop = do
   Ok serv <- start $ return ReplyAndStopState
   call serv ()
   isAlive serv >>= assertBool . not
+
+data DelayedReplyState = DelayedReplyState (Maybe Unique)
+
+instance GenServerState () () DelayedReplyState where
+  handle_call () reqId = do
+    put $ DelayedReplyState $ Just reqId
+    return noreply
+  handle_cast () = do
+    DelayedReplyState (Just reqId) <- get
+    replyWith reqId ()
+    return noreply
+
+test_delayedReply = do
+  Ok server <- start $ return $ DelayedReplyState Nothing
+  forkIO $ do
+    threadDelay $ 50*1000
+    cast server ()
+  call server ()
+  assertBool True
 
 test_cast = do
   Ok serv <- start $ return $ Counter 1
@@ -86,7 +107,7 @@ test_cast = do
 data TerminatedState = TS { termCell :: MVar () }
 
 instance GenServerState Int () TerminatedState where
-  handle_call 1 = return $ reply () -- for fail
+  handle_call 1 _ = return $ reply () -- for fail
   handle_cast 1 = return noreply
 
   onTerminate (TS cell) = putMVar cell ()

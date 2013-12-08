@@ -14,24 +14,18 @@ import Control.Concurrent.MVar (
   )
 
 import Concurrency.OTP.GenServer
+import Concurrency.OTP.Process
 
 data CounterState = Counter { counter :: Int }
 
 data Command = Get | Inc
 
 instance GenServerState Command Int CounterState where
-  handle_call Get = gets counter
+  handle_call Get = gets $ reply . counter
   
-  handle_cast Inc =
+  handle_cast Inc = do
     modify $ \st -> st { counter = counter st + 1 }
-
-data TerminatedState = TS { termCell :: MVar () }
-
-instance GenServerState Int () TerminatedState where
-  handle_call 1 = return () -- for fail
-  handle_cast 1 = return ()
-
-  onTerminate (TS cell) = putMVar cell ()
+    return noreply
 
 test_successStart = do
   cell <- newEmptyMVar
@@ -50,13 +44,52 @@ test_failureStart = do
 
 test_call = do
   Ok serv <- start $ return $ Counter 0
-  call serv Get >>= assertEqual 0
-  
+  call serv Get >>= assertEqual 0 
+
+data StopOnCallState = StopOnCallState
+
+instance GenServerState (MVar ()) () StopOnCallState where
+  handle_call _ = return $ stop "stop"
+  handle_cast r = do
+    liftIO $ putMVar r ()
+    return $ stop "stop"
+
+test_stopOnCall = do
+  req <- newEmptyMVar
+  Ok serv <- start $ return StopOnCallState
+  assertThrowsIO (call serv req) isServerDead
+
+test_stopOnCast = do
+  req <- newEmptyMVar
+  Ok serv <- start $ return StopOnCallState
+  cast serv req
+  takeMVar req
+  isAlive serv >>= assertBool . not
+
+data ReplyAndStopState = ReplyAndStopState
+
+instance GenServerState () () ReplyAndStopState where
+  handle_call () = return $ replyAndStop () "stop"
+  handle_cast () = return noreply
+
+test_replyAndStop = do
+  Ok serv <- start $ return ReplyAndStopState
+  call serv ()
+  isAlive serv >>= assertBool . not
+
 test_cast = do
   Ok serv <- start $ return $ Counter 1
   call serv Get >>= assertEqual 1
   cast serv Inc
   call serv Get >>= assertEqual 2
+
+data TerminatedState = TS { termCell :: MVar () }
+
+instance GenServerState Int () TerminatedState where
+  handle_call 1 = return $ reply () -- for fail
+  handle_cast 1 = return noreply
+
+  onTerminate (TS cell) = putMVar cell ()
 
 test_terminate = do
   cell <- newEmptyMVar

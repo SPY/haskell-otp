@@ -3,9 +3,15 @@ module Concurrency.OTP.GenServer (
   GenServerState(..),
   StartStatus(..),
   ServerIsDead(..),
+  CallResult,
+  CastResult,
   start,
   call,
-  cast
+  cast,
+  reply,
+  noreply,
+  stop,
+  replyAndStop
 ) where
 
 import Control.Monad.State
@@ -33,8 +39,8 @@ import Concurrency.OTP.Process
 type GenServerM s req res = StateT s (Process (Request req res))
 
 class GenServerState req res s | s -> req, s -> res where
-  handle_call :: req -> GenServerM s req res res
-  handle_cast :: req -> GenServerM s req res ()
+  handle_call :: req -> GenServerM s req res (CallResult res)
+  handle_cast :: req -> GenServerM s req res CastResult
   onTerminate :: s -> IO ()
   
   onTerminate = const $ return ()
@@ -48,6 +54,32 @@ instance IsProcess (Request req res) (GenServer req res) where
 
 data Request req res = Call req (MVar (Maybe res))
                      | Cast req
+
+class HandlerResult a where
+  noreply :: a
+  stop    :: String -> a
+
+data CallResult res = Reply res
+                    | NoReply
+                    | ReplyAndStop res String
+                    | Stop String
+
+instance HandlerResult (CallResult res) where
+  noreply = NoReply
+  stop    = Stop
+
+reply :: res -> CallResult res
+reply = Reply
+
+replyAndStop :: res -> String -> CallResult res
+replyAndStop = ReplyAndStop
+
+data CastResult = CastNoReply
+                | CastStop String
+
+instance HandlerResult CastResult where
+  noreply = CastNoReply
+  stop    = CastStop
 
 data StartStatus req res = Ok (GenServer req res) | Fail
 
@@ -80,10 +112,24 @@ handler stateRef = forever $ do
     Call r res -> do
       (result, newState) <- runStateT (handle_call r) serverState
       liftIO $ writeIORef stateRef newState
-      liftIO $ putMVar res $ Just result
+      case result of
+        Reply response ->
+          liftIO $ putMVar res $ Just response
+        NoReply -> 
+          return ()
+        ReplyAndStop response _reason -> do
+          liftIO $ putMVar res $ Just response
+          exit
+        Stop _reason ->
+          exit
     Cast r -> do
-      newState <- execStateT (handle_cast r) serverState
+      (result, newState) <- runStateT (handle_cast r) serverState
       liftIO $ writeIORef stateRef newState
+      case result of
+        CastNoReply ->
+          return ()
+        CastStop _reason ->
+          exit
 
 data ServerIsDead = ServerIsDead deriving (Show, Typeable)
 

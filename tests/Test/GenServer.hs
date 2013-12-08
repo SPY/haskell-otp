@@ -93,7 +93,7 @@ instance GenServerState () () DelayedReplyState where
 test_delayedReply = do
   Ok server <- start $ return $ DelayedReplyState Nothing
   forkIO $ do
-    threadDelay $ 50*1000
+    threadDelay $ 10*1000
     cast server ()
   call server ()
   assertBool True

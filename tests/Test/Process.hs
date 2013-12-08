@@ -31,7 +31,7 @@ test_normalTerminate = do
   takeMVar resp >>= assertEqual Normal
 
 test_isAlive = do
-  pid <- spawn $ liftIO $ ms 100
+  pid <- spawn $ liftIO $ ms 10
   isAlive pid >>= assertBool
   wait pid
   isAlive pid >>= assertBool . not
@@ -48,7 +48,7 @@ test_unlink = do
 
 test_processLink = do
   waitCell <- newEmptyMVar
-  pid <- spawn $ liftIO $ ms 50
+  pid <- spawn $ liftIO $ ms 10
   pid2 <- spawn $ link pid >> liftIO (takeMVar waitCell)
   wait pid2
   assertBool True

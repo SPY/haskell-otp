@@ -29,7 +29,7 @@ import Data.IORef (
     newIORef,
     readIORef,
     writeIORef,
-    atomicModifyIORef
+    atomicModifyIORef'
   )
 import Control.Exception (
     Exception,
@@ -126,7 +126,7 @@ handler stateRef = do
           Reply response ->
             liftIO $ putMVar res $ Just response
           NoReply ->
-            liftIO $ atomicModifyIORef requests $ \rs ->
+            liftIO $ atomicModifyIORef' requests $ \rs ->
               (Map.insert requestId res rs, ())
           ReplyAndStop response _reason -> do
             liftIO $ putMVar res $ Just response
@@ -164,6 +164,6 @@ cast GenServer { gsPid = pid } msg =
 replyWith :: Unique -> res -> GenServerM s req res ()
 replyWith reqId response = do
   requestsRef <- ask
-  res <- liftIO $ atomicModifyIORef requestsRef $ \rs ->
+  res <- liftIO $ atomicModifyIORef' requestsRef $ \rs ->
     (Map.delete reqId rs, Map.lookup reqId rs)
   when (isJust res) $ liftIO $ putMVar (fromJust res) $ Just response

@@ -65,3 +65,13 @@ test_terminate = do
   isEmptyMVar cell >>= assertBool
   cast serv 2 -- fail
   takeMVar cell >>= assertEqual ()
+
+isServerDead ServerIsDead = True
+
+test_failOnCall = do
+  cell <- newEmptyMVar
+  Ok serv <- start $ return $ TS cell
+  call serv 1 -- ok
+  isEmptyMVar cell >>= assertBool
+  assertThrowsIO (call serv 2) isServerDead
+  takeMVar cell >>= assertEqual ()

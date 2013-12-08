@@ -92,8 +92,10 @@ instance Exception ServerIsDead
 call :: GenServer req res -> req -> IO res
 call GenServer { gsPid = pid } msg = do
   response <- newEmptyMVar
+  linkId <- linkIO pid $ const $ putMVar response Nothing
   sendIO pid $ Call msg response
   result <- takeMVar response
+  unlinkIO pid linkId
   case result of
     Just r -> return r
     Nothing -> throw ServerIsDead

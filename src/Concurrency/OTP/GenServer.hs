@@ -1,6 +1,7 @@
 {-# LANGUAGE FunctionalDependencies, DeriveDataTypeable #-}
 module Concurrency.OTP.GenServer (
   GenServerState(..),
+  GenServer,
   StartStatus(..),
   ServerIsDead(..),
   CallResult,
@@ -42,7 +43,9 @@ import Data.Maybe (fromJust, isJust)
 
 import Concurrency.OTP.Process
 
-type GenServerM s req res = ReaderT (IORef (Map.Map Unique (MVar (Maybe res)))) (StateT s (Process (Request req res)))
+type RequestStore res = IORef (Map.Map Unique (MVar (Maybe res)))
+
+type GenServerM s req res = ReaderT (RequestStore res) (StateT s (Process (Request req res)))
 
 class GenServerState req res s | s -> req, s -> res where
   handle_call :: req -> Unique -> GenServerM s req res (CallResult res)

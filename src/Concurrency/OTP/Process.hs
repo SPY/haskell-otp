@@ -73,13 +73,14 @@ import Control.Exception.Base (
 class IsProcess a p | p -> a where
   getPid :: p -> Pid a
 
-type Queue a = TMChan a
+type Queue msg = TMChan msg
 
 newtype LinkId = LinkId Unique deriving (Eq, Ord)
 
-data Pid a = Pid {
+-- | Identificator of process accepted messages of type 'msg'
+data Pid msg = Pid {
     pUniq :: Unique,
-    pQueue :: Queue a,
+    pQueue :: Queue msg,
     pTID :: ThreadId,
     pLinked :: TVar (Maybe (Map LinkId (Reason -> IO ()))),
     pReason :: TVar (Maybe Reason)
@@ -88,9 +89,10 @@ data Pid a = Pid {
 instance IsProcess a (Pid a) where
   getPid = id
 
-data Reason = Normal
-            | Aborted
-            | Error String
+-- | Process termination reason
+data Reason = Normal       -- ^ Caused when process terminate on end of computation or call `exit` function
+            | Aborted      -- ^ Caused when process terminate from another process by 'terminate' function
+            | Error String -- ^ Caused when process terminate abnormal way and store exception description
   deriving (Show, Eq)
 
 instance Eq (Pid a) where
@@ -99,8 +101,10 @@ instance Eq (Pid a) where
 instance Show (Pid a) where
   show Pid { pUniq = u } = "Pid<" ++ show (hashUnique u) ++ ">"
 
+-- | Process computation monad
 type Process msg = ReaderT (Pid msg) IO
 
+-- | Spawn new process in own thread
 spawn :: Process msg () -> IO (Pid msg)
 spawn body = do
   u <- newUnique
@@ -140,21 +144,27 @@ processFinalizer queue Pid{pLinked=linked,pReason=reason} result = do
     Just r <- readTVar reason
     return (elems hs, r)
   mapM_ ($ r) handlers
-    
+
+-- | Asynchronious send messages of type `msg` to process
 sendIO :: Pid msg -> msg -> IO ()
 sendIO Pid { pQueue = cell } msg = atomically $ writeTMChan cell msg
 
+-- | Send messages from one process to another
 send :: Pid msg -> msg -> Process a ()
 send pid msg = liftIO $ sendIO pid msg
 
+-- | Get message from process mailbox.
+--   Blocked, if mailbox is empty, until message will be received.
 receive :: Process msg msg
 receive = do
   Pid { pQueue = cell } <- ask
   liftIO $ atomically $ fmap fromJust (readTMChan cell)
 
+-- | Return pid of current process
 self :: Process msg (Pid msg)
 self = ask
 
+-- | Terminate current process with Normal reason.
 exit :: Process msg ()
 exit = do
   Pid { pReason = reason } <- ask
@@ -163,16 +173,20 @@ exit = do
     atomically $ writeTVar reason $ Just Normal
     killThread tId
 
+-- | Terminate process p
 terminate :: (IsProcess msg p) => p -> IO ()
 terminate p =
   let Pid { pTID = tid } = getPid p
   in killThread tid
 
+-- | Check what process p is alive
 isAlive :: (IsProcess msg p ) => p -> IO Bool
 isAlive p =
   let Pid { pQueue = q } = getPid p
   in atomically $ fmap not (isClosedTMChan q)
 
+-- | Register callback, which will be called on process termination and return subscription id.
+--   If process has died already, callback will be called immediatly.
 linkIO :: (IsProcess msg p) => p -> (Reason -> IO ()) -> IO LinkId
 linkIO p handler = do
   let Pid { pLinked = cell, pReason = r } = getPid p
@@ -188,11 +202,14 @@ linkIO p handler = do
   when (isJust reason) $ handler $ fromJust reason
   return linkId
 
+-- | Link current process with another process p.
+--   Current process will be terminated, if process p will be terminated abnormal.
 link :: (IsProcess msg p) => p -> Process msg LinkId
 link p = do
   self' <- self
-  liftIO $ linkIO p $ const $ terminate self'
+  liftIO $ linkIO p $ \reason -> when (reason /= Normal) (terminate self')
 
+-- | Remove termination callback by LinkId
 unlinkIO :: (IsProcess msg p) => p -> LinkId -> IO ()
 unlinkIO p linkId = do
   let Pid { pLinked = cell } = getPid p
@@ -201,6 +218,7 @@ unlinkIO p linkId = do
     when (isJust handlers) $ do
       writeTVar cell $ Just $ delete linkId $ fromJust handlers
 
+-- | Block current execution thread until process is alive.
 wait :: (IsProcess msg p) => p -> IO ()
 wait p = do
  done <- newEmptyMVar

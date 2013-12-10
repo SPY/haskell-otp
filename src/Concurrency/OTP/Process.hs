@@ -75,6 +75,7 @@ class IsProcess a p | p -> a where
 
 type Queue msg = TMChan msg
 
+-- | Id of subscription on process termination.
 newtype LinkId = LinkId Unique deriving (Eq, Ord)
 
 -- | Identificator of process accepted messages of type 'msg'

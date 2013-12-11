@@ -48,15 +48,17 @@ test_unlink = do
 
 test_processLinkNormal = do
   pid <- spawn $ liftIO $ ms 10
-  pid2 <- spawn $ link pid >> (liftIO $ ms 20)
-  ms 15
+  pid2 <- spawn $ link pid >> (liftIO $ ms 50)
+  wait pid
+  ms 1
   isAlive pid2 >>= assertBool
 
 test_processLinkAbnormal = do
   waitCell <- newEmptyMVar
   pid <- spawn $ (liftIO $ ms 10) >> error "something wrong"
-  pid2 <- spawn $ link pid >> (liftIO $ ms 20)
-  ms 15
+  pid2 <- spawn $ link pid >> (liftIO $ ms 50)
+  wait pid
+  ms 1
   isAlive pid2 >>= assertBool . not
 
 

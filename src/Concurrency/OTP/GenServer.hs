@@ -1,4 +1,4 @@
-{-# LANGUAGE FunctionalDependencies, DeriveDataTypeable #-}
+{-# LANGUAGE FunctionalDependencies, DeriveDataTypeable, LambdaCase #-}
 -- | Attempt to reproduce Erlang pattern of resource owner process gen_server.
 --
 --   Original documentation: http://www.erlang.org/doc/man/gen_server.html
@@ -19,15 +19,20 @@ module Concurrency.OTP.GenServer (
   replyAndStop
 ) where
 
+import Control.Monad.Catch (try, SomeException)
 import Control.Monad.State
 import Control.Monad.Reader
+import Control.Concurrent (myThreadId)
 import Control.Concurrent.MVar (
     MVar,
+    newMVar,
     newEmptyMVar,
     putMVar,
     takeMVar,
-    isEmptyMVar
+    tryTakeMVar,
+    withMVar
   )
+import Control.Exception.Base (throwTo)
 import Data.IORef (
     IORef,
     newIORef,
@@ -35,10 +40,7 @@ import Data.IORef (
     writeIORef,
     atomicModifyIORef'
   )
-import Control.Exception (
-    Exception,
-    throw
-  )
+import Control.Exception (Exception)
 import Data.Typeable (Typeable)
 import qualified Data.Map as Map
 import Data.Unique (Unique, newUnique)
@@ -46,7 +48,7 @@ import Data.Maybe (fromJust, isJust)
 
 import Concurrency.OTP.Process
 
-type RequestStore res = IORef (Map.Map Unique (MVar (Maybe res)))
+type RequestStore res = IORef (Map.Map Unique (MVar res))
 
 -- | Monad for execution GenServer implementation callbacks.
 type GenServerM s req res = ReaderT (RequestStore res) (StateT s (Process (Request req res)))
@@ -84,7 +86,7 @@ data GenServer req res = GenServer {
 instance IsProcess (Request req res) (GenServer req res) where
   getPid (GenServer pid) = pid
 
-data Request req res = Call req (MVar (Maybe res))
+data Request req res = Call req (MVar res)
                      | Cast req
 
 class HandlerResult a where
@@ -124,24 +126,24 @@ data StartStatus req res = Ok (GenServer req res) | Fail
 --   If `start` returns Fail, initialization was failed. In that case onTerminate callback will not be called.
 start :: (GenServerState req res s) => Process (Request req res) s -> IO (StartStatus req res)
 start initFn = do
-  after <- newEmptyMVar
-  pid <- spawn $ do
-    initState <- initFn
-    stateRef <- liftIO $ newIORef initState
-    liftIO $ putMVar after $ Just stateRef
-    handler stateRef
-  failLink <- linkIO pid $ const $ do
-    isEmpty <- isEmptyMVar after
-    when isEmpty $ putMVar after Nothing
-  result <- takeMVar after
-  unlinkIO pid failLink
-  case result of
-    Just stateRef -> do
-      linkIO pid $ const $ do
-        st <- readIORef stateRef
-        onTerminate st
-      return $ Ok $ GenServer pid
-    Nothing -> return Fail
+   result <- newEmptyMVar
+   pid <- spawn $
+     try (initFn >>= liftIO . newIORef) >>= \case
+       Right stateRef -> do
+         liftIO (putMVar result (Right stateRef))
+         handler stateRef
+       Left e -> liftIO $ putMVar result (Left e)
+   takeMVar result >>= \case
+     Right stateRef -> do
+       linkIO pid $ const $ do
+         st <- readIORef stateRef
+         onTerminate st
+       return $ Ok $ GenServer pid
+     Left e -> fail1 e
+  where
+    -- XXX: we are hidding exception here, we shouldn't do it
+    fail1 :: SomeException -> IO (StartStatus req res)
+    fail1 _ = return Fail
 
 handler :: (GenServerState req res s) => IORef s -> Process (Request req res) ()
 handler stateRef = do
@@ -157,12 +159,12 @@ handler stateRef = do
         liftIO $ writeIORef stateRef newState
         case result of
           Reply response ->
-            liftIO $ putMVar res $ Just response
+            liftIO $ putMVar res response
           NoReply ->
             liftIO $ atomicModifyIORef' requests $ \rs ->
               (Map.insert requestId res rs, ())
           ReplyAndStop response _reason -> do
-            liftIO $ putMVar res $ Just response
+            liftIO $ putMVar res response
             exit
           Stop _reason ->
             exit
@@ -185,14 +187,13 @@ instance Exception ServerIsDead
 --   `ServerIsDead` exception will be raised.
 call :: GenServer req res -> req -> IO res
 call GenServer { gsPid = pid } msg = do
+  lock     <- newMVar ()
   response <- newEmptyMVar
-  linkId <- linkIO pid $ const $ putMVar response Nothing
-  sendIO pid $ Call msg response
-  result <- takeMVar response
-  unlinkIO pid linkId
-  case result of
-    Just r -> return r
-    Nothing -> throw ServerIsDead
+  tid <- myThreadId
+  -- XXX: as always we are hiding exception from user
+  withLinkIO_ pid
+    (const $ tryTakeMVar lock >>= maybe (throwTo tid ServerIsDead) return)
+    (sendIO pid (Call msg response) >> withMVar lock (const $ takeMVar response))
 
 -- | Send asynchronous request to GenServer.
 --   `cast` doesn't block caller thread.
@@ -206,4 +207,4 @@ replyWith reqId response = do
   requestsRef <- ask
   res <- liftIO $ atomicModifyIORef' requestsRef $ \rs ->
     (Map.delete reqId rs, Map.lookup reqId rs)
-  when (isJust res) $ liftIO $ putMVar (fromJust res) $ Just response
+  when (isJust res) $ liftIO $ putMVar (fromJust res) response

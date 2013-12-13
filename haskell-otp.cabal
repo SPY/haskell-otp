@@ -20,7 +20,8 @@ library
                        mtl >= 2.1,
                        stm >= 2.4,
                        stm-chans >= 3.0,
-                       containers >= 0.5
+                       containers >= 0.5,
+                       exceptions >= 0.1
   hs-source-dirs:      src
   ghc-options:         -Wall -fno-warn-unused-do-bind
 

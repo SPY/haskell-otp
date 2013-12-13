@@ -8,6 +8,8 @@ module Concurrency.OTP.Process (
   spawn,
   linkIO,
   unlinkIO,
+  withLinkIO,
+  withLinkIO_,
   link,
   send,
   sendIO,
@@ -45,6 +47,7 @@ import Control.Concurrent.MVar (
     takeMVar,
     putMVar
   )
+import Control.Monad.Catch (bracket)
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TMChan (
     TMChan,
@@ -218,6 +221,18 @@ unlinkIO p linkId = do
     handlers <- readTVar cell
     when (isJust handlers) $ do
       writeTVar cell $ Just $ delete linkId $ fromJust handlers
+
+-- | Run action in under link bracket.
+withLinkIO :: (IsProcess msg p) => p -> (Reason -> IO ()) -> (LinkId -> IO a) -> IO a
+withLinkIO p clb =
+  bracket (linkIO p clb)
+          (unlinkIO p)
+
+withLinkIO_ :: (IsProcess msg p) => p -> (Reason -> IO ()) -> (IO a) -> IO a
+withLinkIO_ p clb =
+  bracket (linkIO p clb)
+          (unlinkIO p)
+          . const
 
 -- | Block current execution thread until process is alive.
 wait :: (IsProcess msg p) => p -> IO ()

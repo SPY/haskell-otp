@@ -25,12 +25,9 @@ import Control.Monad.Reader
 import Control.Concurrent (myThreadId)
 import Control.Concurrent.MVar (
     MVar,
-    newMVar,
     newEmptyMVar,
     putMVar,
-    takeMVar,
-    tryTakeMVar,
-    withMVar
+    takeMVar
   )
 import Control.Exception.Base (throwTo)
 import Data.IORef (
@@ -86,7 +83,7 @@ data GenServer req res = GenServer {
 instance IsProcess (Request req res) (GenServer req res) where
   getPid (GenServer pid) = pid
 
-data Request req res = Call req (MVar res)
+data Request req res = Call req (MVar res) LinkId
                      | Cast req
 
 class HandlerResult a where
@@ -148,22 +145,25 @@ start initFn = do
 handler :: (GenServerState req res s) => IORef s -> Process (Request req res) ()
 handler stateRef = do
   requests <- liftIO $ newIORef Map.empty
+  self' <- self
   forever $ do
     req <- receive
     serverState <- liftIO $ readIORef stateRef
     case req of
-      Call r res -> do
+      Call r res lid -> do
         requestId <- liftIO newUnique
         let stateTAction = runReaderT (handle_call r requestId) requests
         (result, newState) <- runStateT stateTAction serverState
         liftIO $ writeIORef stateRef newState
         case result of
-          Reply response ->
-            liftIO $ putMVar res response
+          Reply response -> liftIO $ do
+            unlinkIO self' lid
+            putMVar res response
           NoReply ->
             liftIO $ atomicModifyIORef' requests $ \rs ->
               (Map.insert requestId res rs, ())
           ReplyAndStop response _reason -> do
+            liftIO $ unlinkIO self' lid
             liftIO $ putMVar res response
             exit
           Stop _reason ->
@@ -187,13 +187,11 @@ instance Exception ServerIsDead
 --   `ServerIsDead` exception will be raised.
 call :: GenServer req res -> req -> IO res
 call GenServer { gsPid = pid } msg = do
-  lock     <- newMVar ()
   response <- newEmptyMVar
   tid <- myThreadId
-  -- XXX: as always we are hiding exception from user
-  withLinkIO_ pid
-    (const $ tryTakeMVar lock >>= maybe (throwTo tid ServerIsDead) return)
-    (sendIO pid (Call msg response) >> withMVar lock (const $ takeMVar response))
+  lid <- linkIO pid $ const $ throwTo tid ServerIsDead
+  sendIO pid $ Call msg response lid
+  takeMVar response
 
 -- | Send asynchronous request to GenServer.
 --   `cast` doesn't block caller thread.

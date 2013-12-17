@@ -43,9 +43,12 @@ import Control.Concurrent (
     killThread
   )
 import Control.Concurrent.MVar (
+    newMVar,
     newEmptyMVar,
+    tryTakeMVar,
     takeMVar,
-    putMVar
+    putMVar,
+    withMVar
   )
 import Control.Monad.Catch (bracket)
 import Control.Monad.STM (atomically)
@@ -224,15 +227,16 @@ unlinkIO p linkId = do
 
 -- | Run action in under link bracket.
 withLinkIO :: (IsProcess msg p) => p -> (Reason -> IO ()) -> (LinkId -> IO a) -> IO a
-withLinkIO p clb =
-  bracket (linkIO p clb)
+withLinkIO p clb act = do
+  lock <- newMVar ()  
+  let cleaner r = tryTakeMVar lock >>= maybe (clb r) return
+  bracket (linkIO p cleaner)
           (unlinkIO p)
+          (withMVar lock . const . act)
 
 withLinkIO_ :: (IsProcess msg p) => p -> (Reason -> IO ()) -> (IO a) -> IO a
 withLinkIO_ p clb =
-  bracket (linkIO p clb)
-          (unlinkIO p)
-          . const
+  withLinkIO p clb . const
 
 -- | Block current execution thread until process is alive.
 wait :: (IsProcess msg p) => p -> IO ()

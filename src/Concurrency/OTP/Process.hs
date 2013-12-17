@@ -70,6 +70,7 @@ import Control.Concurrent.STM.TVar (
   )
 import Control.Monad (when)
 import Control.Monad.Reader (ReaderT(..), ask, liftIO)
+import Control.Exception (catch)
 import Control.Exception.Base (
     Exception(..),
     SomeException,
@@ -150,7 +151,10 @@ processFinalizer queue Pid{pLinked=linked,pReason=reason} result = do
         Just _ -> r
     Just r <- readTVar reason
     return (elems hs, r)
-  mapM_ ($ r) handlers
+  let skipAll :: SomeException -> IO ()
+      skipAll _ = return ()
+      eval handler = catch (handler r) skipAll
+  mapM_ eval handlers
 
 -- | Asynchronious send messages of type `msg` to process
 sendIO :: Pid msg -> msg -> IO ()

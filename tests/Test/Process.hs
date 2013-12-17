@@ -46,6 +46,16 @@ test_unlink = do
   takeMVar handler2
   isEmptyMVar handler1 >>= assertBool
 
+test_failInLinkedAction = do
+  handler1 <- newEmptyMVar
+  handler2 <- newEmptyMVar
+  pid <- spawn $ liftIO $ ms 5
+  linkIO pid $ const $ putMVar handler1 () >> error "oops"
+  linkIO pid $ const $ putMVar handler2 ()
+  takeMVar handler1
+  ms 3
+  isEmptyMVar handler2 >>= assertBool . not
+
 test_processLinkNormal = do
   pid <- spawn $ liftIO $ ms 10
   pid2 <- spawn $ link pid >> (liftIO $ ms 50)

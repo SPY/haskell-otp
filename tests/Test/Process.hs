@@ -39,13 +39,16 @@ test_isAlive = do
   isAlive pid >>= assertBool . not
 
 test_unlink = do
+  lock     <- newEmptyMVar
   handler1 <- newEmptyMVar
   handler2 <- newEmptyMVar
-  pid <- spawn $ return ()
+  pid <- spawn $ liftIO $ takeMVar lock
   linkId <- linkIO pid $ putMVar handler1
   linkIO pid $ putMVar handler2
   unlinkIO pid linkId
+  putMVar lock ()
   takeMVar handler2
+  yield
   isEmptyMVar handler1 >>= assertBool
 
 test_failInLinkedAction = do

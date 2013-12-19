@@ -5,6 +5,7 @@
 module Concurrency.OTP.GenServer (
   GenServerState(..),
   GenServer,
+  RequestId,
   StartStatus(..),
   ServerIsDead(..),
   CallResult,
@@ -16,20 +17,20 @@ module Concurrency.OTP.GenServer (
   reply,
   noreply,
   stop,
-  replyAndStop
+  replyAndStop,
+  callWithTimeout
 ) where
 
 import Control.Monad.Catch (try, SomeException)
 import Control.Monad.State
 import Control.Monad.Reader
-import Control.Concurrent (myThreadId)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (
     MVar,
     newEmptyMVar,
     putMVar,
     takeMVar
   )
-import Control.Exception.Base (throwTo)
 import Data.IORef (
     IORef,
     newIORef,
@@ -37,15 +38,17 @@ import Data.IORef (
     writeIORef,
     atomicModifyIORef'
   )
-import Control.Exception (Exception)
+import Control.Exception (Exception, throw)
 import Data.Typeable (Typeable)
 import qualified Data.Map as Map
 import Data.Unique (Unique, newUnique)
 import Data.Maybe (fromJust, isJust)
+import Control.Applicative ((<$>))
 
 import Concurrency.OTP.Process
 
-type RequestStore res = IORef (Map.Map Unique (MVar res))
+type RequestStore res = IORef (Map.Map RequestId (MVar (CallState res)))
+type RequestId = Unique
 
 -- | Monad for execution GenServer implementation callbacks.
 type GenServerM s req res = ReaderT (RequestStore res) (StateT s (Process (Request req res)))
@@ -83,7 +86,7 @@ data GenServer req res = GenServer {
 instance IsProcess (Request req res) (GenServer req res) where
   getPid (GenServer pid) = pid
 
-data Request req res = Call req (MVar res) LinkId
+data Request req res = Call req (MVar (CallState res)) LinkId
                      | Cast req
 
 class HandlerResult a where
@@ -158,13 +161,13 @@ handler stateRef = do
         case result of
           Reply response -> liftIO $ do
             unlinkIO self' lid
-            putMVar res response
+            putMVar res $ SuccessCall response
           NoReply ->
             liftIO $ atomicModifyIORef' requests $ \rs ->
               (Map.insert requestId res rs, ())
           ReplyAndStop response _reason -> do
             liftIO $ unlinkIO self' lid
-            liftIO $ putMVar res response
+            liftIO $ putMVar res $ SuccessCall response
             exit
           Stop _reason ->
             exit
@@ -186,12 +189,26 @@ instance Exception ServerIsDead
 --   If GenServer instance is not alive or will be terminated during `call`
 --   `ServerIsDead` exception will be raised.
 call :: GenServer req res -> req -> IO res
-call GenServer { gsPid = pid } msg = do
+call srv msg =
+  fromJust <$> callWithTimeout srv Nothing msg
+
+data CallState res = FailOfCall
+                   | CallTimeout
+                   | SuccessCall res
+
+callWithTimeout :: GenServer req res -> Maybe Int -> req -> IO (Maybe res)
+callWithTimeout GenServer { gsPid = pid } tm msg = do
   response <- newEmptyMVar
-  tid <- myThreadId
-  lid <- linkIO pid $ const $ throwTo tid ServerIsDead
+  lid <- linkIO pid $ const $ putMVar response FailOfCall
+  when (isJust tm) $ void $ forkIO $ do
+    threadDelay $ fromJust tm * 1000
+    putMVar response CallTimeout
   sendIO pid $ Call msg response lid
-  takeMVar response
+  res <- takeMVar response
+  case res of
+    FailOfCall -> throw ServerIsDead
+    CallTimeout -> return Nothing
+    SuccessCall r -> return $ Just r
 
 -- | Send asynchronous request to GenServer.
 --   `cast` doesn't block caller thread.
@@ -200,9 +217,9 @@ cast GenServer { gsPid = pid } msg =
   sendIO pid $ Cast msg
 
 -- | Reply to process, which waits response from server.
-replyWith :: Unique -> res -> GenServerM s req res ()
+replyWith :: RequestId -> res -> GenServerM s req res ()
 replyWith reqId response = do
   requestsRef <- ask
   res <- liftIO $ atomicModifyIORef' requestsRef $ \rs ->
     (Map.delete reqId rs, Map.lookup reqId rs)
-  when (isJust res) $ liftIO $ putMVar (fromJust res) response
+  when (isJust res) $ liftIO $ putMVar (fromJust res) $ SuccessCall response

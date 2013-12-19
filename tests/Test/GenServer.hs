@@ -18,6 +18,8 @@ import Control.Concurrent (threadDelay, forkIO)
 import Concurrency.OTP.GenServer
 import Concurrency.OTP.Process
 
+ms n = threadDelay $ n * 1000
+
 data CounterState = Counter { counter :: Int }
 
 data Command = Get | Inc
@@ -47,6 +49,21 @@ test_failureStart = do
 test_call = do
   Ok serv <- start $ return $ Counter 0
   call serv Get >>= assertEqual 0 
+
+test_callWithTimeout = do
+  Ok serv <- start $ return $ Counter 0
+  callWithTimeout serv (Just 10) Get >>= assertEqual (Just 0)
+
+data SlowCallState = SlowCallState
+
+instance GenServerState () () SlowCallState where
+  handle_call _ _ = liftIO (ms 10) >> return (reply ())
+  handle_cast _ = return noreply
+
+test_callWithFailByTimeout = do
+  Ok serv <- start $ return SlowCallState
+  callWithTimeout serv (Just 5) () >>= assertEqual Nothing
+  callWithTimeout serv (Just 20) () >>= assertEqual (Just ())
 
 data StopOnCallState = StopOnCallState
 

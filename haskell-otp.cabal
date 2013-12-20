@@ -34,3 +34,4 @@ test-suite tests
                        HTF >= 0.10,
                        mtl >= 2.1
   default-language:    Haskell2010
+  ghc-options:         -threaded

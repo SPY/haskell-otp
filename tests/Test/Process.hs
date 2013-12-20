@@ -19,7 +19,9 @@ ms = threadDelay . (1000*)
 
 test_spawnNewProcessAndWait = do
   resp <- newEmptyMVar
-  pid <- spawn $ liftIO $ putMVar resp ()
+  pid <- spawn $ liftIO $ do
+    ms 5
+    putMVar resp ()
   isEmptyMVar resp >>= assertBool
   wait pid
   isEmptyMVar resp >>= assertBool . not

@@ -52,7 +52,7 @@ test_call = do
 
 test_callWithTimeout = do
   Ok serv <- start $ return $ Counter 0
-  callWithTimeout serv (Just 10) Get >>= assertEqual (Just 0)
+  callWithTimeout serv (Just 500) Get >>= assertEqual (Just 0)
 
 data SlowCallState = SlowCallState
 
@@ -62,7 +62,7 @@ instance GenServerState () () SlowCallState where
 
 test_callWithFailByTimeout = do
   Ok serv <- start $ return SlowCallState
-  callWithTimeout serv (Just 5) () >>= assertEqual Nothing
+  callWithTimeout serv (Just 10) () >>= assertEqual Nothing
   callWithTimeout serv (Just 20) () >>= assertEqual (Just ())
 
 data StopOnCallState = StopOnCallState
@@ -94,6 +94,7 @@ instance GenServerState () () ReplyAndStopState where
 test_replyAndStop = do
   Ok serv <- start $ return ReplyAndStopState
   call serv ()
+  threadDelay 1000
   isAlive serv >>= assertBool . not
 
 data DelayedReplyState = DelayedReplyState (Maybe Unique)

@@ -21,16 +21,16 @@ module Concurrency.OTP.GenServer (
   callWithTimeout
 ) where
 
+import Control.Applicative
 import Control.Monad.Catch (try, SomeException)
 import Control.Monad.State
 import Control.Monad.Reader
-import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (
-    MVar,
     newEmptyMVar,
     putMVar,
     takeMVar
   )
+import Control.Concurrent.STM
 import Data.IORef (
     IORef,
     newIORef,
@@ -43,11 +43,10 @@ import Data.Typeable (Typeable)
 import qualified Data.Map as Map
 import Data.Unique (Unique, newUnique)
 import Data.Maybe (fromJust, isJust)
-import Control.Applicative ((<$>))
 
 import Concurrency.OTP.Process
 
-type RequestStore res = IORef (Map.Map RequestId (MVar (CallState res)))
+type RequestStore res = IORef (Map.Map RequestId (res -> IO ()))
 type RequestId = Unique
 
 -- | Monad for execution GenServer implementation callbacks.
@@ -86,7 +85,7 @@ data GenServer req res = GenServer {
 instance IsProcess (Request req res) (GenServer req res) where
   getPid (GenServer pid) = pid
 
-data Request req res = Call req (MVar (CallState res)) LinkId
+data Request req res = Call req (res -> IO ())
                      | Cast req
 
 class HandlerResult a where
@@ -148,27 +147,23 @@ start initFn = do
 handler :: (GenServerState req res s) => IORef s -> Process (Request req res) ()
 handler stateRef = do
   requests <- liftIO $ newIORef Map.empty
-  self' <- self
   forever $ do
     req <- receive
     serverState <- liftIO $ readIORef stateRef
     case req of
-      Call r res lid -> do
+      Call r res -> do
         requestId <- liftIO newUnique
         let stateTAction = runReaderT (handle_call r requestId) requests
         (result, newState) <- runStateT stateTAction serverState
         liftIO $ writeIORef stateRef newState
         case result of
-          Reply response -> liftIO $ do
-            unlinkIO self' lid
-            putMVar res $ SuccessCall response
+          Reply response ->
+            liftIO $ res response
           NoReply ->
             liftIO $ atomicModifyIORef' requests $ \rs ->
               (Map.insert requestId res rs, ())
-          ReplyAndStop response _reason -> do
-            liftIO $ unlinkIO self' lid
-            liftIO $ putMVar res $ SuccessCall response
-            exit
+          ReplyAndStop response _reason ->
+            liftIO (res response) >> exit
           Stop _reason ->
             exit
       Cast r -> do
@@ -192,23 +187,21 @@ call :: GenServer req res -> req -> IO res
 call srv msg =
   fromJust <$> callWithTimeout srv Nothing msg
 
-data CallState res = FailOfCall
-                   | CallTimeout
-                   | SuccessCall res
-
 callWithTimeout :: GenServer req res -> Maybe Int -> req -> IO (Maybe res)
 callWithTimeout GenServer { gsPid = pid } tm msg = do
-  response <- newEmptyMVar
-  lid <- linkIO pid $ const $ putMVar response FailOfCall
-  when (isJust tm) $ void $ forkIO $ do
-    threadDelay $ fromJust tm * 1000
-    putMVar response CallTimeout
-  sendIO pid $ Call msg response lid
-  res <- takeMVar response
-  case res of
-    FailOfCall -> throw ServerIsDead
-    CallTimeout -> return Nothing
-    SuccessCall r -> return $ Just r
+  response <- newEmptyTMVarIO
+  isTimeOut <- maybe (newTVarIO False) (registerDelay.(*1000)) tm
+  result <- withLinkIO_ pid
+    (const $ void $ atomically $ tryPutTMVar response (Left (Left ())))
+    (do
+    sendIO pid $ Call msg (atomically . void . (tryPutTMVar response) . Right)
+    atomically $ (readTVar isTimeOut >>= flip unless retry >> return (Left (Right ())))
+                 `orElse` (takeTMVar response)
+    )
+  case result of
+    Right x -> return (Just x)
+    Left (Left _)  -> throw ServerIsDead
+    Left (Right _) -> return Nothing -- put delayed in mbox
 
 -- | Send asynchronous request to GenServer.
 --   `cast` doesn't block caller thread.
@@ -222,4 +215,4 @@ replyWith reqId response = do
   requestsRef <- ask
   res <- liftIO $ atomicModifyIORef' requestsRef $ \rs ->
     (Map.delete reqId rs, Map.lookup reqId rs)
-  when (isJust res) $ liftIO $ putMVar (fromJust res) $ SuccessCall response
+  when (isJust res) $ liftIO $ fromJust res response

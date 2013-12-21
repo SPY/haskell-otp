@@ -187,6 +187,11 @@ call :: GenServer req res -> req -> IO res
 call srv msg =
   fromJust <$> callWithTimeout srv Nothing msg
 
+-- | Send synchronous request to GenServer with timeout.
+--   `call` block caller process until GenServer will reply or timeout will be expired.
+--   If GenServer instance is not alive or will be terminated during `call`
+--   `ServerIsDead` exception will be raised.
+--   If Timeout will be expired, `Nothing` will be returned.
 callWithTimeout :: GenServer req res -> Maybe Int -> req -> IO (Maybe res)
 callWithTimeout GenServer { gsPid = pid } tm msg = do
   response <- newEmptyTMVarIO

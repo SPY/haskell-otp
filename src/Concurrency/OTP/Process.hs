@@ -1,5 +1,4 @@
-{-# LANGUAGE FunctionalDependencies, FlexibleInstances #-}
-{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE FunctionalDependencies, FlexibleInstances, GeneralizedNewtypeDeriving #-}
 module Concurrency.OTP.Process (
   Pid,
   Process,
@@ -71,13 +70,15 @@ import Control.Concurrent.STM.TVar (
     modifyTVar'
   )
 import Control.Monad (when)
-import Control.Monad.Reader (ReaderT(..), ask, liftIO)
+import Control.Monad.Reader (ReaderT(..), ask)
+import Control.Monad.Trans (MonadIO, liftIO)
 import Control.Exception (catch)
 import Control.Exception.Base (
     Exception(..),
     SomeException,
     AsyncException(ThreadKilled)
   )
+import Control.Monad.Catch (MonadCatch)
 
 class IsProcess a p | p -> a where
   getPid :: p -> Pid a
@@ -112,7 +113,21 @@ instance Show (Pid a) where
   show Pid { pUniq = u } = "Pid<" ++ show (hashUnique u) ++ ">"
 
 -- | Process computation monad
-type Process msg = ReaderT (Pid msg) IO
+newtype Process msg a = Process { unProcess :: ReaderT (Pid msg) IO a } deriving (Monad, MonadIO, MonadCatch)
+
+class (Monad m) => MonadProcess msg m | m -> msg where
+  -- | Get message from process mailbox.
+  --   Blocked, if mailbox is empty, until message will be received.
+  receive :: m msg
+  -- | Return pid of current process
+  self :: m (Pid msg)
+  -- | Terminate current process with Normal reason.
+  exit :: m ()
+
+instance MonadProcess msg (Process msg) where
+  receive = receiveProcess
+  self = selfProcess
+  exit = exitProcess
 
 -- | Spawn new process in own thread
 spawn :: Process msg () -> IO (Pid msg)
@@ -130,7 +145,7 @@ spawn body = do
   rQueue <- atomically $ dupTMChan (pQueue pid)
   tid <- flip forkFinally (processFinalizer rQueue pid) $ do
     tid <- myThreadId
-    runReaderT body $ pid{pTID=tid,pQueue=rQueue}
+    runReaderT (unProcess body) $ pid{pTID=tid,pQueue=rQueue}
   return $ pid{pTID=tid}
 
 resultToReason :: Either SomeException () -> Reason
@@ -166,21 +181,17 @@ sendIO Pid { pQueue = cell } msg = atomically $ writeTMChan cell msg
 send :: Pid msg -> msg -> Process a ()
 send pid msg = liftIO $ sendIO pid msg
 
--- | Get message from process mailbox.
---   Blocked, if mailbox is empty, until message will be received.
-receive :: Process msg msg
-receive = do
-  Pid { pQueue = cell } <- ask
+receiveProcess :: Process msg msg
+receiveProcess = do
+  Pid { pQueue = cell } <- Process ask
   liftIO $ atomically $ fmap fromJust (readTMChan cell)
 
--- | Return pid of current process
-self :: Process msg (Pid msg)
-self = ask
+selfProcess :: Process msg (Pid msg)
+selfProcess = Process ask
 
--- | Terminate current process with Normal reason.
-exit :: Process msg ()
-exit = do
-  Pid { pReason = reason } <- ask
+exitProcess :: Process msg ()
+exitProcess = do
+  Pid { pReason = reason } <- Process ask
   liftIO $ do
     tId <- myThreadId
     atomically $ writeTVar reason $ Just Normal

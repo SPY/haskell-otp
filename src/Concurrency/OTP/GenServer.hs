@@ -1,4 +1,4 @@
-{-# LANGUAGE FunctionalDependencies, DeriveDataTypeable, LambdaCase #-}
+{-# LANGUAGE FunctionalDependencies, DeriveDataTypeable, LambdaCase, GeneralizedNewtypeDeriving, FlexibleInstances #-}
 -- | Attempt to reproduce Erlang pattern of resource owner process gen_server.
 --
 --   Original documentation: http://www.erlang.org/doc/man/gen_server.html
@@ -51,7 +51,13 @@ type RequestStore res = IORef (Map.Map RequestId (res -> IO ()))
 type RequestId = Unique
 
 -- | Monad for execution GenServer implementation callbacks.
-type GenServerM s req res = ReaderT (RequestStore res) (StateT s (Process (Request req res)))
+newtype GenServerM s req res a = GenServerM {
+    unGenServer :: ReaderT (RequestStore res) (StateT s (Process (Request req res))) a
+  } deriving (Monad, MonadIO)
+
+instance MonadState s (GenServerM s req res) where
+  get = GenServerM $ lift get
+  put = GenServerM . lift . put
 
 -- | Describe GenServer callbacks.
 class GenServerState req res s | s -> req, s -> res where
@@ -150,7 +156,8 @@ handler stateRef = do
     case req of
       Call r res -> do
         requestId <- liftIO newUnique
-        let stateTAction = runReaderT (handle_call r requestId) requests
+        let callHandler = unGenServer $ handle_call r requestId
+        let stateTAction = flip runReaderT requests callHandler
         (result, newState) <- runStateT stateTAction serverState
         liftIO $ writeIORef stateRef newState
         case result of
@@ -164,7 +171,8 @@ handler stateRef = do
           Stop _reason ->
             exit
       Cast r -> do
-        (result, newState) <- runStateT (runReaderT (handle_cast r) requests) serverState
+        let castHandler = flip runReaderT requests $ unGenServer $ handle_cast r
+        (result, newState) <- runStateT castHandler serverState
         liftIO $ writeIORef stateRef newState
         case result of
           CastNoReply ->
@@ -214,7 +222,7 @@ cast GenServer { gsPid = pid } msg =
 -- | Reply to process, which waits response from server.
 replyWith :: RequestId -> res -> GenServerM s req res ()
 replyWith reqId response = do
-  requestsRef <- ask
+  requestsRef <- GenServerM ask
   res <- liftIO $ atomicModifyIORef' requestsRef $ \rs ->
     (Map.delete reqId rs, Map.lookup reqId rs)
   when (isJust res) $ liftIO $ fromJust res response

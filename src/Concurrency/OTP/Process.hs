@@ -14,6 +14,7 @@ module Concurrency.OTP.Process (
   send,
   sendIO,
   receive,
+  receiveWithTimeout,
   self,
   exit,
   terminate,
@@ -51,7 +52,7 @@ import Control.Concurrent.MVar (
     withMVar
   )
 import Control.Monad.Catch (bracket)
-import Control.Monad.STM (atomically)
+import Control.Monad.STM (STM, atomically, retry, orElse)
 import Control.Concurrent.STM.TMChan (
     TMChan,
     newBroadcastTMChan,
@@ -66,9 +67,11 @@ import Control.Concurrent.STM.TVar (
     newTVar,
     readTVar,
     writeTVar,
-    modifyTVar'
+    modifyTVar',
+    newTVarIO,
+    registerDelay
   )
-import Control.Monad (when)
+import Control.Monad (when, unless)
 import Control.Monad.Reader (ReaderT(..), ask)
 import Control.Monad.Trans (MonadIO, liftIO)
 import Control.Exception (catch)
@@ -112,21 +115,29 @@ instance Show (Pid a) where
   show Pid { pUniq = u } = "Pid<" ++ show (hashUnique u) ++ ">"
 
 -- | Process computation monad
-newtype Process msg a = Process { unProcess :: ReaderT (Pid msg) IO a } deriving (Monad, MonadIO, MonadCatch)
+newtype Process msg a = Process { unProcess :: ReaderT (Pid msg) IO a } 
+  deriving (Monad, MonadIO, MonadCatch, Functor)
 
 class (Monad m) => MonadProcess msg m | m -> msg where
-  -- | Get message from process mailbox.
-  --   Blocked, if mailbox is empty, until message will be received.
-  receive :: m msg
+  -- | Get message from process mailbox with timeout in milliseconds.
+  --   Blocked, if mailbox is empty, until message will be received or timeout will be expired.
+  receiveWithTimeout :: Maybe Int -> m (Maybe msg)
   -- | Return pid of current process
   self :: m (Pid msg)
   -- | Terminate current process with Normal reason.
   exit :: m ()
 
 instance MonadProcess msg (Process msg) where
-  receive = receiveProcess
+  receiveWithTimeout = receiveWithTimeoutProcess
   self = selfProcess
   exit = exitProcess
+
+-- | Get message from process mailbox.
+--   Blocked, if mailbox is empty, until message will be received.
+receive :: (MonadProcess msg m) => m msg
+receive = do
+  Just msg <- receiveWithTimeout Nothing
+  return msg
 
 -- | Spawn new process in own thread
 spawn :: Process msg () -> IO (Pid msg)
@@ -180,10 +191,18 @@ sendIO Pid { pQueue = cell } msg = atomically $ writeTMChan cell msg
 send :: Pid msg -> msg -> Process a ()
 send pid msg = liftIO $ sendIO pid msg
 
-receiveProcess :: Process msg msg
-receiveProcess = do
+receiveWithTimeoutProcess :: Maybe Int -> Process msg (Maybe msg)
+receiveWithTimeoutProcess timeout = do
   Pid { pQueue = cell } <- Process ask
-  liftIO $ atomically $ fmap fromJust (readTMChan cell)
+  isTimeOut <- liftIO $ maybe (newTVarIO False) (registerDelay.(*1000)) timeout
+  liftIO $ atomically
+    $ waitTimeout isTimeOut `orElse` readTMChan cell
+  where
+    waitTimeout :: TVar Bool -> STM (Maybe msg)
+    waitTimeout isTimeOut = do
+      res <- readTVar isTimeOut
+      unless res retry
+      return Nothing
 
 selfProcess :: Process msg (Pid msg)
 selfProcess = Process ask

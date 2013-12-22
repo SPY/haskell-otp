@@ -4,6 +4,7 @@ module Test.Process (htf_thisModulesTests) where
 import Test.Framework
 
 import Data.Unique
+import Data.Maybe (isNothing, isJust)
 import Control.Applicative ((<$>))
 import Control.Concurrent (threadDelay, yield)
 import Control.Concurrent.MVar (
@@ -103,6 +104,22 @@ test_send2Messages = do
   takeMVar resp >>= assertEqual msg
   sendIO pid msg
   takeMVar resp >>= assertEqual msg
+
+test_notReceiveMessageWithTimeout = do
+  lock <- newEmptyMVar
+  spawn $ do
+    msg <- receiveWithTimeout $ Just 10
+    liftIO $ putMVar lock msg
+  takeMVar lock >>= assertBool . isNothing
+
+test_receiveMessageWithTimeout = do
+  lock <- newEmptyMVar
+  pid <- spawn $ do
+    msg <- receiveWithTimeout $ Just 20
+    liftIO $ putMVar lock msg
+  ms 10
+  sendIO pid ()
+  takeMVar lock >>= assertBool . isJust
 
 test_2processInteraction = do
   msg <- newMessage

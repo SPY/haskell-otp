@@ -6,7 +6,7 @@ module Concurrency.OTP.GenServer (
   GenServerState(..),
   GenServer,
   RequestId,
-  StartStatus(..),
+  Status(..),
   ServerIsDead(..),
   CallResult,
   CastResult,
@@ -45,6 +45,7 @@ import Data.Unique (Unique, newUnique)
 import Data.Maybe (fromJust, isJust)
 
 import Concurrency.OTP.Process
+import Concurrency.OTP.Internal.Types
 
 type RequestStore res = IORef (Map.Map RequestId (res -> IO ()))
 type RequestId = Unique
@@ -116,14 +117,10 @@ instance HandlerResult CastResult where
   noreply = CastNoReply
   stop    = CastStop
 
--- | Returned by `start`.
---   If start is success - (`Ok` serverHandle) will be returned, else - `Fail`.
-data StartStatus req res = Ok (GenServer req res) | Fail
-
 -- | Start instance of GenServer.
 --   Take action for initialization of state. And return `StartStatus`.
 --   If `start` returns Fail, initialization was failed. In that case onTerminate callback will not be called.
-start :: (GenServerState req res s) => Process (Request req res) s -> IO (StartStatus req res)
+start :: (GenServerState req res s) => Process (Request req res) s -> IO (Status (GenServer req res))
 start initFn = do
    result <- newEmptyMVar
    pid <- spawn $
@@ -141,7 +138,7 @@ start initFn = do
      Left e -> fail1 e
   where
     -- XXX: we are hidding exception here, we shouldn't do it
-    fail1 :: SomeException -> IO (StartStatus req res)
+    fail1 :: SomeException -> IO (Status (GenServer req res))
     fail1 _ = return Fail
 
 handler :: (GenServerState req res s) => IORef s -> Process (Request req res) ()

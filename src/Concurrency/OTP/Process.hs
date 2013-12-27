@@ -1,4 +1,5 @@
 {-# LANGUAGE FunctionalDependencies, FlexibleInstances #-}
+{-# LANGUAGE ExistentialQuantification #-}
 module Concurrency.OTP.Process (
   Pid,
   Process,
@@ -19,7 +20,8 @@ module Concurrency.OTP.Process (
   terminate,
   isAlive,
   wait,
-  liftIO
+  liftIO,
+  SomePid(..)
 ) where
 
 import Data.Maybe (isJust, fromJust)
@@ -248,3 +250,9 @@ wait p = do
  done <- newEmptyMVar
  linkIO (getPid p) $ const $ putMVar done ()
  takeMVar done
+
+-- | Existential version of Pid value
+data SomePid = forall msg . SomePid (Pid msg)
+
+-- | Process computation monad
+-- data SomeProcess = ReaderT SomePid IO

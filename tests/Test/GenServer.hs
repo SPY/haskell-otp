@@ -83,6 +83,7 @@ test_stopOnCast = do
   Ok serv <- start $ return StopOnCallState
   cast serv req
   takeMVar req
+  threadDelay 500
   isAlive serv >>= assertBool . not
 
 data ReplyAndStopState = ReplyAndStopState

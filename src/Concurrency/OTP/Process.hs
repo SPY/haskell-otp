@@ -1,7 +1,11 @@
-{-# LANGUAGE FunctionalDependencies, FlexibleInstances, GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Concurrency.OTP.Process (
   Pid,
-  Process,
+  Process(..),
   Reason(..),
   IsProcess(..),
   LinkId,
@@ -20,7 +24,9 @@ module Concurrency.OTP.Process (
   isAlive,
   wait,
   liftIO,
-  SomePid(..)
+  SomePid(..),
+  SomeProcess(..),
+  AnyProcess(..)
 ) where
 
 import Data.Maybe (isJust, fromJust)
@@ -51,7 +57,6 @@ import Control.Concurrent.MVar (
     putMVar,
     withMVar
   )
-import Control.Monad.Catch (bracket)
 import Control.Monad.STM (atomically)
 import Control.Concurrent.STM.TMChan (
     TMChan,
@@ -69,16 +74,11 @@ import Control.Concurrent.STM.TVar (
     writeTVar,
     modifyTVar'
   )
+import Control.Exception.Base (AsyncException(ThreadKilled))
 import Control.Monad (when)
 import Control.Monad.Reader (ReaderT(..), ask)
-import Control.Monad.Trans (MonadIO, liftIO)
-import Control.Exception (catch)
-import Control.Exception.Base (
-    Exception(..),
-    SomeException,
-    AsyncException(ThreadKilled)
-  )
-import Control.Monad.Catch (MonadCatch)
+import Control.Monad.IO.Class
+import Control.Monad.Catch
 
 class IsProcess a p | p -> a where
   getPid :: p -> Pid a
@@ -181,17 +181,21 @@ sendIO Pid { pQueue = cell } msg = atomically $ writeTMChan cell msg
 send :: Pid msg -> msg -> Process a ()
 send pid msg = liftIO $ sendIO pid msg
 
+-- | Get message from process mailbox.
+--   Blocked, if mailbox is empty, until message will be received.
 receiveProcess :: Process msg msg
-receiveProcess = do
-  Pid { pQueue = cell } <- Process ask
+receiveProcess = Process $ do
+  Pid { pQueue = cell } <- ask
   liftIO $ atomically $ fmap fromJust (readTMChan cell)
 
+-- | Return pid of current process
 selfProcess :: Process msg (Pid msg)
 selfProcess = Process ask
 
+-- | Terminate current process with Normal reason.
 exitProcess :: Process msg ()
-exitProcess = do
-  Pid { pReason = reason } <- Process ask
+exitProcess = Process $ do
+  Pid { pReason = reason } <- ask
   liftIO $ do
     tId <- myThreadId
     atomically $ writeTVar reason $ Just Normal
@@ -265,5 +269,16 @@ wait p = do
 -- | Existential version of Pid value
 data SomePid = forall msg . SomePid (Pid msg)
 
+instance Eq SomePid where
+  (SomePid a) == (SomePid b) = pUniq a == pUniq b
+
+-- Don't know what should be here
+{-
+instance IsProcess msg SomePid where
+  getPid (SomePid a) = getPid a
+-}
+
 -- | Process computation monad
--- data SomeProcess = ReaderT SomePid IO
+data SomeProcess o = forall a . SomeProcess (Process a o)
+
+data AnyProcess = forall a . AnyProcess (SomeProcess a)

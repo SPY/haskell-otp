@@ -19,7 +19,8 @@ module Concurrency.OTP.GenServer (
   noreply,
   stop,
   replyAndStop,
-  callWithTimeout
+  callWithTimeout,
+  genServerPid
 ) where
 
 import Control.Applicative
@@ -50,9 +51,11 @@ import Concurrency.OTP.Process
 type RequestStore res = IORef (Map.Map RequestId (res -> IO ()))
 type RequestId = Unique
 
+type ProcReader req res = (RequestStore res, Pid (Request req res))
+
 -- | Monad for execution GenServer implementation callbacks.
 newtype GenServerM s req res a = GenServerM {
-    unGenServer :: ReaderT (RequestStore res) (StateT s (Process (Request req res))) a
+    unGenServer :: ReaderT (ProcReader req res) (StateT s (Process (Request req res))) a
   } deriving (Applicative, Functor, Monad, MonadIO)
 
 instance MonadState s (GenServerM s req res) where
@@ -153,6 +156,7 @@ start initFn = do
 
 handler :: (GenServerState req res s) => IORef s -> Process (Request req res) ()
 handler stateRef = do
+  pid <- self
   requests <- liftIO $ newIORef Map.empty
   forever $ do
     req <- receive
@@ -161,7 +165,7 @@ handler stateRef = do
       Call r res -> do
         requestId <- liftIO newUnique
         let callHandler = unGenServer $ handle_call r requestId
-        let stateTAction = flip runReaderT requests callHandler
+        let stateTAction = flip runReaderT (requests, pid) callHandler
         (result, newState) <- runStateT stateTAction serverState
         liftIO $ writeIORef stateRef newState
         case result of
@@ -175,7 +179,7 @@ handler stateRef = do
           Stop _reason ->
             exit
       Cast r -> do
-        let castHandler = flip runReaderT requests $ unGenServer $ handle_cast r
+        let castHandler = flip runReaderT (requests, pid) $ unGenServer $ handle_cast r
         (result, newState) <- runStateT castHandler serverState
         liftIO $ writeIORef stateRef newState
         case result of
@@ -226,7 +230,11 @@ cast GenServer { gsPid = pid } msg =
 -- | Reply to process, which waits response from server.
 replyWith :: RequestId -> res -> GenServerM s req res ()
 replyWith reqId response = do
-  requestsRef <- GenServerM ask
+  requestsRef <- fst <$> GenServerM ask
   res <- liftIO $ atomicModifyIORef' requestsRef $ \rs ->
     (Map.delete reqId rs, Map.lookup reqId rs)
   when (isJust res) $ liftIO $ fromJust res response
+
+genServerPid :: GenServerM s req res (GenServer req res)
+genServerPid = GenServer . snd <$> GenServerM ask
+  

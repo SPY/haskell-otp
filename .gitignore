@@ -1,1 +1,5 @@
 dist/
+.HTF
+.cabal-sandbox
+.idea
+cabal.sandbox.config

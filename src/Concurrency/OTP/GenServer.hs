@@ -5,6 +5,7 @@
 module Concurrency.OTP.GenServer (
   GenServerState(..),
   GenServer,
+  GenServerM,
   RequestId,
   StartStatus(..),
   ServerIsDead(..),

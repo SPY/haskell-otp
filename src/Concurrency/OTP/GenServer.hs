@@ -52,7 +52,7 @@ type RequestId = Unique
 -- | Monad for execution GenServer implementation callbacks.
 newtype GenServerM s req res a = GenServerM {
     unGenServer :: ReaderT (RequestStore res) (StateT s (Process (Request req res))) a
-  } deriving (Functor, Monad, MonadIO)
+  } deriving (Applicative, Functor, Monad, MonadIO)
 
 instance MonadState s (GenServerM s req res) where
   get = GenServerM $ lift get

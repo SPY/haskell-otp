@@ -1,4 +1,4 @@
-{-# LANGUAGE FunctionalDependencies, FlexibleInstances, GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE FunctionalDependencies, FlexibleInstances, GeneralizedNewtypeDeriving, StandaloneDeriving #-}
 module Concurrency.OTP.Process (
   Pid,
   Process,
@@ -33,6 +33,7 @@ import Data.Map (
     elems
   )
 import Control.Applicative (
+    Applicative,
     (<$>),
     (<*>),
     pure
@@ -80,7 +81,7 @@ import Control.Exception.Base (
     SomeException,
     AsyncException(ThreadKilled)
   )
-import Control.Monad.Catch (MonadCatch)
+import Control.Monad.Catch (MonadCatch, MonadThrow)
 
 class IsProcess a p | p -> a where
   getPid :: p -> Pid a
@@ -116,7 +117,7 @@ instance Show (Pid a) where
 
 -- | Process computation monad
 newtype Process msg a = Process { unProcess :: ReaderT (Pid msg) IO a } 
-  deriving (Monad, MonadIO, MonadCatch, Functor)
+  deriving (Monad, Applicative, MonadIO, Functor, MonadThrow, MonadCatch)
 
 class (Monad m) => MonadProcess msg m | m -> msg where
   -- | Get message from process mailbox with timeout in milliseconds.
